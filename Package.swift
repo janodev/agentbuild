@@ -26,6 +26,7 @@ let package = Package(
             name: "AgentBuildCLI",
             dependencies: [
                 "AgentBuildCore",
+                .product(name: "AgentLeaseCore", package: "agentlease"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

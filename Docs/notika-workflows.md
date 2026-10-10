@@ -1,0 +1,164 @@
+---
+type: Development Reference
+title: Notika development workflows
+description: Describes Swift-controlled Make routes, native execution, result evidence, and supervised interactive sessions.
+tags: [notika, xcode, testing, agentlease, workflows]
+status: implemented-validation-pending
+---
+
+# Commands
+
+```sh
+agentbuild notika generate --repository /absolute/path/to/Notika
+agentbuild notika build --repository /absolute/path/to/Notika --route build-macos
+agentbuild notika build --repository /absolute/path/to/Notika --route test-unit-file --file SomeTests
+agentbuild notika build --repository /absolute/path/to/Notika --route test-unit-focused --only-testing 'SomeTests/someMethod()'
+agentbuild notika build --repository /absolute/path/to/Notika --route build-ios
+agentbuild notika run --repository /absolute/path/to/Notika
+agentbuild notika run-rust-test svg --repository /absolute/path/to/Notika
+agentbuild notika run-preflight --repository /absolute/path/to/Notika
+agentbuild notika run-docs archive --repository /absolute/path/to/Notika
+```
+
+These commands use the Swift project adapter. They run admitted native phases
+directly. `build` aliases the ordinary macOS build;
+`test-xcode-file` aliases `test-unit-file`. Repeat `--only-testing` to select a
+batch of Swift Testing suites or methods. Selectors are literal argument data.
+
+Notika's root Make routes dispatch through `Scripts/notika-dev`, a literal-argv
+Bash entry point for the installed Swift executable. The root-owned Make overlay
+contains the closed build/test route inventory; it leaves the pinned `mk`
+submodule unchanged. Routine generation, build, test, launch, Rust, and artifact
+maintenance use this controller. Python implementations remain reference tests
+and independent helper contracts.
+
+`AGENTBUILD_EXECUTABLE` can select an absolute reviewed executable while testing
+a new release. Normally the wrapper uses
+`~/.local/opt/agentbuild/bin/agentbuild`. It never bootstraps a tool build or
+falls back to the old controller when that binary is absent.
+
+Use Notika's Make shortcuts for routine work:
+
+```sh
+make generate
+make build-macos
+make test-unit-file FILE=NotebookTemplateMetadataTests
+make run-macos
+make maintain-artifacts
+```
+
+The Swift build adapter covers the closed 54-route catalog and aliases,
+including broad/focused tests, visual tests, coverage exports, and the two fixed
+performance workloads. Planning is read-only and does not prove execution.
+Broad test routes first run or reuse the exact-source development preflight;
+focused tests avoid that broad prerequisite.
+
+# Ownership and evidence
+
+Generation holds the shared session-writer resource and exclusive graph
+resource. It runs the two fixed preparation scripts, moves the checked prior
+project/workspace entries to Trash, and invokes `Scripts/tuist generate --no-open`
+under account compilation admission. `--cached` sets `USE_CACHED_DEPENDENCIES=1`
+for Tuist. Generation retains separate raw phase logs and a closed lifecycle
+report; it does not claim an Xcode build or graph-freshness receipt.
+After preparation, all prior graph entries are checked before the first Trash
+operation, then each is checked again immediately before its move. The exact
+owned `xcshareddata/swiftpm/configuration` directory supports Xcode's permissive
+permissions; that exception does not admit links or relax other paths.
+
+Generation exposed a moved upstream PhononCoreML `1.1.1` tag. Notika's local
+Phonon package pins its already recorded revision
+`464ae57460fed61d4feb6f2a7424b5be1213accb`, which the regenerated
+`.package.resolved` retains exactly.
+
+The adapter holds a shared session-writer resource, shared generated graph,
+shared cache-policy resource, and exclusive compatible cache. It validates
+workspace and cache bindings before native execution. Compilation acquires
+the account-wide `host:compile` gate last and releases it before test runtime
+or result inspection. A borrowed directory descriptor binds the native
+working directory; a copied pathname does not replace that capability.
+
+A logical test has separate `build-for-testing` and `test-without-building`
+phases. A failed build skips runtime. The result bundle belongs to this
+session and exact runtime invocation. Apple's first summary read can create
+SQLite indexes at the result root. A supervised preparation phase permits only
+those fixed index additions while watching the original payload. After it
+finishes, the driver seals the complete result tree and reuses that captured
+summary. Later result consumers must leave the sealed evidence unchanged.
+Passing unit results require actual, nonempty passing counts with no failed
+tests. A parameterized Swift Testing method can execute several cases.
+
+Separate stdout/stderr logs, actual native termination, executed counts,
+source/tool observations, cancellation, and publication errors appear in the
+session report. Native failure takes precedence over later evidence errors.
+Native success with missing, empty, changed, or unreadable evidence is
+inconclusive rather than a passing test run. Source drift is reported separately
+from the observed native outcome.
+
+# Interactive and device ownership
+
+UI and iPad simulator routes enter one outer SimLease supervisor before project
+ownership. An inherited valid boundary is honored without nesting. Simulator
+commands target only its exported `SIMULATOR_ID`; functional workflows run
+SimSlim first. Performance workflows retain system services.
+
+`notika run` builds and starts the exact admitted macOS product. It publishes
+the actual process identity and application raw-log paths when the app is
+running, then remains alive until the app exits. The outer macOS UI lease,
+session writer, graph, and cache stay owned throughout that lifetime. A running
+receipt is a launch observation; it is not a terminal successful session.
+
+Rust families run their fixed license check and Cargo commands under shared
+graph, Rust policy/cache, and account compilation ownership. Their reports use a
+separate strict namespace and retain actual raw output and termination.
+
+`notika run-preflight` exposes the same exact-source reusable development gate
+without a fabricated Xcode request or a recursive Make invocation.
+
+`notika run-docs archive|rendered|preview` builds DocC under compilation
+admission, then snapshots the archive into its session. Rendered output uses the
+configured renderer tree and Swift's bounded copy/overlay operations. Preview
+serves that retained site on loopback while writer, graph, and cache ownership
+remain live. A failed renderer or preview never turns a successful docbuild into
+a successful documentation workflow; both outcomes remain in its report.
+
+Generic `agentbuild run` must not wrap these managed Notika routes: they already
+own their resources. Imported result paths, copied JSON receipts, source
+observations, and environment markers do not confer live lease authority.
+
+# Validation record
+
+On 10 October 2026, the full Swift controller suite passed 487 tests in 49
+suites in 87.761 seconds in
+[batch 37](../Untracked/Validation/project-foundations-tests-37.log).
+Actual Notika sessions also established the following results; their reports
+remain under Notika's `Artifacts/AgentSessions/`.
+
+| Session | Workflow and result |
+| --- | --- |
+| `22A680D0-C64C-472F-A5D2-D3FD83E310A4` | macOS build: native exit 0, succeeded session |
+| `2E618D82-23B3-45DD-BF88-E50F933724FE` | Focused `NotebookTemplateMetadataTests`: native exit 0, 9/9 passed, no failures, result publication admitted |
+| `30FA337E-860A-41FF-ADA6-A4E5B27A2435` | Generation: native exit 0, complete admitted generation report |
+| `F44D28C2-BCCA-4E64-88DD-A48F482B4DCC` | macOS launch: native build exit 0; user confirmed the Documents window; user-requested close completed with app and workflow exit 0 |
+
+The initial release installation passed with version `0.3.0` at
+`~/.local/opt/agentbuild/bin/agentbuild`; its command link and tool doctor passed.
+The Make compilation default now uses `hw.logicalcpu` (12 on this Mac), matching
+the user's all-core preference.
+
+The iPad creation check, `0DF2A751-257A-47BD-889A-3BA3C744013C`, passed with
+native exit 0, one executed/passing test, admitted results, and no source or
+toolchain drift. It retained the selected paper-guide spacing after notebook
+creation. SimLease deleted its private iPad Air simulator after completion.
+
+DocC archive validation failed with native exit 65: the generic macOS
+destination included x86_64, where the Float16 code did not compile. The command
+now selects arm64, matching its cache identity. Its focused batch 38 passed nine
+tests in one suite; the native rerun remains pending. Preflight retry 3 was cancelled with exit 143
+after an old Python reference fixture reported a startup readiness timeout.
+Compilation was concurrent; the timeout's cause remains unconfirmed.
+
+Status remains `implemented-validation-pending`. Final preflight,
+the DocC rerun, final release installation after its fix, and Git
+publication remain pending. These recorded results do not imply validation of
+every catalog route.

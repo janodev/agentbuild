@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Subprocess
 
@@ -15,6 +16,7 @@ public struct CommandResult: Equatable, Sendable {
 public enum CommandRunnerError: Error, Equatable {
     case timedOut
     case missingResult
+    case spawnConfiguration(Int32)
 }
 
 /// Runs bounded diagnostic commands. Project build admission is a separate layer.
@@ -57,7 +59,16 @@ public struct CommandRunner: Sendable {
         workingDirectory: String?
     ) async throws -> CommandResult {
         var options = PlatformOptions()
-        options.createSession = true
+        // Darwin supports session creation in posix_spawn itself. The package's
+        // createSession path forks first, briefly inheriting every live lock in
+        // a concurrent coordinator before exec closes unrelated descriptors.
+        options.preSpawnProcessConfigurator = { attributes, _ in
+            var flags: Int16 = 0
+            let read = posix_spawnattr_getflags(&attributes, &flags)
+            guard read == 0 else { throw CommandRunnerError.spawnConfiguration(read) }
+            let write = posix_spawnattr_setflags(&attributes, flags | Int16(POSIX_SPAWN_SETSID))
+            guard write == 0 else { throw CommandRunnerError.spawnConfiguration(write) }
+        }
         // A diagnostic probe can be killed immediately. Target its isolated
         // process group so an early parent exit cannot strand descendants.
         options.teardownSequence = [

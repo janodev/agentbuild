@@ -137,9 +137,13 @@ private struct ArtifactFixture {
     let root: URL
 
     init() throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        var canonical = [CChar](repeating: 0, count: Int(PATH_MAX))
+        try #require(realpath(temporary.path, &canonical) != nil)
+        let bytes = canonical.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        directory = URL(fileURLWithPath: String(decoding: bytes, as: UTF8.self))
         root = directory.appendingPathComponent("artifacts")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
     func remove() {

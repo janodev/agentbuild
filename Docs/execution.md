@@ -60,6 +60,9 @@ Each UUID session owns a private 0700 directory, 0600 raw stdout/stderr files,
 and a 0600 atomically published `manifest.json`. Pinned nofollow directory and
 file descriptors own evidence; filesystem paths are diagnostic. Existing
 artifact roots must belong to the current user and forbid group/world writes.
+Every ancestor is opened without following symbolic links. Supply a canonical
+absolute artifact root; paths through macOS aliases such as `/var` or `/tmp`
+must use their resolved `/private` spelling.
 Log descriptors remain close-on-exec in the coordinator and are borrowed by
 the spawn API. No output-size limit or in-memory collection changes the result.
 

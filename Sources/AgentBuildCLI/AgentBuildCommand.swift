@@ -7,9 +7,10 @@ struct AgentBuildCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentbuild",
         abstract: "Coordinate owned commands and preserve their native results and logs.",
-        discussion: "Managed project build routes are planned. The run command provides lease-aware execution primitives.",
+        discussion: "The Notika adapter runs owned development workflows; run executes generic explicitly leased commands.",
         version: AgentBuild.version,
-        subcommands: [DoctorCommand.self, RunCommand.self]
+        subcommands: [DoctorCommand.self, RunCommand.self, NotikaCommand.self, NativeWorkerCommand.self,
+                      NotikaDocPreviewCommand.self]
     )
 }
 

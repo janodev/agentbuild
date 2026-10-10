@@ -227,12 +227,14 @@ struct ManagedCommandRunnerTests {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        defer { if process.isRunning { _ = kill(process.processIdentifier, SIGKILL); process.waitUntilExit() } }
+        defer { fixture.stop(process) }
         try await waitUntil { FileManager.default.fileExists(atPath: marker.path) }
         let child = try processID(in: marker)
         defer { _ = kill(child, SIGKILL) }
         #expect(kill(process.processIdentifier, SIGKILL) == 0)
-        process.waitUntilExit()
+        try await waitUntil { !process.isRunning && kill(process.processIdentifier, 0) < 0 && errno == ESRCH }
+        #expect(process.terminationReason == .uncaughtSignal)
+        #expect(process.terminationStatus == SIGKILL)
         #expect(kill(child, 0) == 0)
         #expect(try !fixture.available())
         #expect(kill(child, SIGKILL) == 0)
@@ -267,6 +269,19 @@ private struct ExecutionFixture: Sendable {
     }
 
     func remove() { try? FileManager.default.removeItem(at: directory) }
+
+    func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        let result = kill(process.processIdentifier, SIGKILL), error = errno
+        #expect(result == 0 || error == ESRCH)
+        let clock = ContinuousClock(), deadline = ContinuousClock().now.advanced(by: .seconds(5))
+        var retired = false
+        while clock.now < deadline {
+            if !process.isRunning && kill(process.processIdentifier, 0) < 0 && errno == ESRCH { retired = true; break }
+            usleep(10_000)
+        }
+        #expect(retired, "Managed CLI fixture retirement must be observed within five seconds.")
+    }
 
     func command(
         executable: String = "/bin/sh", arguments: [String] = ["-c", "exit 0"],

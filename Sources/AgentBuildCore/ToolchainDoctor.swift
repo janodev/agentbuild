@@ -60,7 +60,7 @@ public struct DoctorReport: Codable, Equatable, Sendable {
 }
 
 public enum AgentBuild {
-    public static let version = "0.2.0"
+    public static let version = "0.3.0"
 }
 
 public struct ToolchainDoctor: Sendable {

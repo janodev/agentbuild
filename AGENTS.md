@@ -12,12 +12,13 @@ tags: [development, agents, testing]
 - Target macOS 27 or later, use Swift 6 language mode, and sort imports alphabetically.
 - Use `make build`, `make release`, `make test`, and `make install`. Compilation
   acquires the account-wide AgentLease `host:compile` resource. Keep the default
-  two compiler jobs unless a task requires a different setting.
+  all logical CPU cores unless the user requests a different setting.
 - Use Apple Testing for Swift tests. Do not run SwiftFormat or SwiftLint.
-- The current CLI provides diagnostics and generic owned command execution.
-  Read `Docs/execution.md` before lifecycle changes. Expose managed build routes only after
-  their ownership, cancellation, artifact, and outcome contracts are implemented
-  and tested. Notika's Python driver is the reference for those contracts.
+- The CLI provides generic owned execution and the Notika development adapter.
+  Read `Docs/execution.md`, `Docs/notika-workflows.md`, and the relevant contract
+  before lifecycle changes. Keep native outcomes, raw evidence, source drift,
+  and publication failures separate. The former Python driver is a test behavior
+  reference, not a routine execution fallback.
 - Install a copied release binary under the per-user opt directory. Never point
   the command symlink into `.build`.
 - Use OKF metadata for documentation, following the existing documents.

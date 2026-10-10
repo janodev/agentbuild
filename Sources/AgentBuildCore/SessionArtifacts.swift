@@ -11,6 +11,7 @@ internal final class SessionArtifacts: Sendable {
     let stderrDescriptor: Int32
 
     private let directoryDescriptor: Int32
+    private let rootCustody: RetainedArtifactDirectory
 
     init(root: String, runID: String) throws {
         guard root.hasPrefix("/"), !root.utf8.contains(0),
@@ -24,11 +25,16 @@ internal final class SessionArtifacts: Sendable {
             throw ManagedExecutionError.invalidRequest("artifact root must not contain relative path components")
         }
         let rootPath = "/" + components.joined(separator: "/")
-        try Self.createRoot(rootPath)
-        let rootDescriptor = Darwin.open(rootPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard rootDescriptor >= 0 else { throw Self.failure("open artifact root") }
+        let rootDescriptor = try Self.createRoot(rootPath)
         defer { Darwin.close(rootDescriptor) }
         try Self.validateDirectory(rootDescriptor, operation: "validate artifact root", privateMode: false)
+        let custody = try RetainedArtifactDirectory(path: rootPath)
+        var rootStatus = stat()
+        guard fstat(rootDescriptor, &rootStatus) == 0 else { throw Self.failure("stat artifact root") }
+        guard custody.fingerprint.device == Int64(rootStatus.st_dev),
+              custody.fingerprint.inode == UInt64(rootStatus.st_ino) else {
+            throw ManagedExecutionError.artifactIO(operation: "artifact root changed", code: ESTALE)
+        }
 
         guard Darwin.mkdirat(rootDescriptor, runID, 0o700) == 0 else {
             throw Self.failure("create artifact session")
@@ -53,6 +59,7 @@ internal final class SessionArtifacts: Sendable {
             errorDescriptor = try Self.openLog("stderr.log", directory: sessionDescriptor)
             try Self.synchronize(sessionDescriptor, operation: "synchronize artifact session")
             try Self.synchronize(rootDescriptor, operation: "synchronize artifact root")
+            try custody.revalidate()
         } catch {
             if outputDescriptor >= 0 { Darwin.close(outputDescriptor) }
             if errorDescriptor >= 0 { Darwin.close(errorDescriptor) }
@@ -69,6 +76,7 @@ internal final class SessionArtifacts: Sendable {
         stdoutDescriptor = outputDescriptor
         stderrDescriptor = errorDescriptor
         directoryDescriptor = sessionDescriptor
+        rootCustody = custody
     }
 
     deinit {
@@ -77,7 +85,10 @@ internal final class SessionArtifacts: Sendable {
         Darwin.close(directoryDescriptor)
     }
 
+    func revalidateRootCustody() throws { try rootCustody.revalidate() }
+
     func publish(_ report: ManagedExecutionReport) throws {
+        try revalidateRootCustody()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let bytes: Data
@@ -125,14 +136,23 @@ internal final class SessionArtifacts: Sendable {
         try Self.synchronize(stderrDescriptor, operation: "synchronize stderr log")
     }
 
-    private static func createRoot(_ path: String) throws {
-        var componentPath = ""
+    private static func createRoot(_ path: String) throws -> Int32 {
+        var parent = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw failure("open filesystem root") }
+        var transferred = false
+        defer { if !transferred { Darwin.close(parent) } }
         for component in path.split(separator: "/") {
-            componentPath += "/\(component)"
-            if Darwin.mkdir(componentPath, 0o700) != 0, errno != EEXIST {
+            let name = String(component)
+            if Darwin.mkdirat(parent, name, 0o700) != 0, errno != EEXIST {
                 throw failure("create artifact root")
             }
+            let child = Darwin.openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard child >= 0 else { throw failure("open artifact root component") }
+            Darwin.close(parent)
+            parent = child
         }
+        transferred = true
+        return parent
     }
 
     private static func validateDirectory(_ descriptor: Int32, operation: String, privateMode: Bool) throws {

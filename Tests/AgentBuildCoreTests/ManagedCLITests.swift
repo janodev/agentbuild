@@ -20,7 +20,6 @@ struct ManagedCLITests {
         try process.run()
         defer { fixture.stop(process) }
         try await cliWaitUntil { !process.isRunning }
-        process.waitUntilExit()
         #expect(process.terminationReason == .exit)
         #expect(process.terminationStatus == 70)
         #expect(output.fileHandleForReading.readDataToEndOfFile().isEmpty)
@@ -47,7 +46,6 @@ struct ManagedCLITests {
 
         #expect(kill(process.processIdentifier, SIGTERM) == 0)
         try await cliWaitUntil { !process.isRunning }
-        process.waitUntilExit()
         let report = try fixture.report(output)
         #expect(process.terminationReason == .exit)
         #expect(process.terminationStatus == 128 + SIGTERM)
@@ -78,7 +76,6 @@ struct ManagedCLITests {
 
         #expect(kill(process.processIdentifier, SIGINT) == 0)
         try await cliWaitUntil { !process.isRunning }
-        process.waitUntilExit()
         let report = try fixture.report(output)
         #expect(process.terminationReason == .exit)
         #expect(process.terminationStatus == 128 + SIGINT)
@@ -106,7 +103,6 @@ struct ManagedCLITests {
         try process.run()
         defer { fixture.stop(process) }
         try await cliWaitUntil { !process.isRunning }
-        process.waitUntilExit()
         let report = try fixture.report(output)
         #expect(process.terminationReason == .exit)
         #expect(process.terminationStatus == 0)
@@ -131,7 +127,6 @@ struct ManagedCLITests {
         try process.run()
         defer { fixture.stop(process) }
         try await cliWaitUntil { !process.isRunning }
-        process.waitUntilExit()
         let report = try fixture.report(output)
         let expectedLeases = [ResourceLease(resource: try ResourceName("fixture:work"), mode: .shared)]
         #expect(process.terminationReason == .exit)
@@ -156,7 +151,10 @@ private struct CLIFixture {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
-        directory = temporary.resolvingSymlinksInPath()
+        var canonical = [CChar](repeating: 0, count: Int(PATH_MAX))
+        try #require(realpath(temporary.path, &canonical) != nil)
+        let path = String(decoding: canonical.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        directory = URL(fileURLWithPath: path)
     }
 
     func remove() { try? FileManager.default.removeItem(at: directory) }
@@ -181,7 +179,9 @@ private struct CLIFixture {
     func stop(_ process: Process) {
         if process.isRunning {
             _ = kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
+            let deadline = ContinuousClock().now.advanced(by: .seconds(5))
+            while process.isRunning, ContinuousClock().now < deadline { usleep(10_000) }
+            #expect(!process.isRunning, "Fixture process must retire within five seconds.")
         }
     }
 
