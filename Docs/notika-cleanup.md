@@ -63,6 +63,15 @@ Python terminal manifests are also recognized. Legacy owner checks use exact
 process birth identity; live or unobservable owners remain protected. Unknown
 families and malformed or future lifecycle evidence remain protected.
 
+Legacy Python publication can leave a second, sealed hard link named
+`.<filename>.<PID>.<32-lowercase-hex>.stage`, where the filename is
+`manifest.json` or `development-session.json`, inside the same session.
+Retention accepts that layout only when there are
+exactly two links and the known private sibling has the same complete file
+fingerprint as the public record. Both names are revalidated before claiming
+or moving the session. External or unrecognized links stay protected. This
+retention admission does not make the record reusable build/result evidence.
+
 Admitted unfinished sessions use the later of their recorded start and the
 latest nested artifact modification as their last activity. A log written
 today preserves a session started yesterday. The nofollow inventory is bounded
@@ -112,3 +121,19 @@ that disk space was freed.
 Notika's `make maintain-artifacts` dispatches to the Swift collector. Cleanup
 uses live kernel locks; neither an old registry filename nor a retained report
 means the folder is currently leased.
+
+On 2026-10-11, the full Swift suite passed 498 tests in 49 suites in
+237.527 seconds. Four regression tests cover 14 parameterized cases for legacy
+publication links: ordinary terminal, authority-only and abandoned records;
+external, unrecognized or third links; malformed staging names; and removed or
+replaced aliases during revalidation. The raw log is
+`Untracked/Validation/session-hardlink-fix-tests.log`.
+
+The installed release passed doctor and matched its copied build with SHA-256
+`abd635a8e70dea29437166ceedb3c8c24478430acd4dfef6db40114807ac3cce`.
+Executing session cleanup moved all 21 affected prior-day records to Trash,
+reducing `Artifacts/AgentSessions` from 1.7 GB to 4.4 MB. The two current-day
+records and one older authority with a mismatched filesystem device remained
+unchanged; `Artifacts/AgentSessionTrashClaims` was empty afterward. The executed
+report is `Untracked/Validation/session-hardlink-cleanup-executed.json`. Exit 3
+reports the protected mismatched authority, not a failed Trash operation.

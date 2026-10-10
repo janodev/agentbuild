@@ -419,6 +419,27 @@ private final class SessionRetentionFile: Sendable {
             throw NotikaSessionRetentionError.evidenceChanged
         }
     }
+
+    /// The Python publisher retained its private, sealed staging link after
+    /// publishing the public name. Admit that exact sibling for retention only;
+    /// an unknown or external second link cannot establish owned custody.
+    func legacyStageName(parent: Int32) throws -> String? {
+        if fingerprint.links == 1 { return nil }
+        guard fingerprint.links == 2 else { throw NotikaSessionRetentionError.invalidManifest }
+        let prefix = "." + name + "."
+        let names = try sessionRetentionNames(parent, maximum: NotikaSessionRetentionCollector.maximumRootEntries)
+        let matches = try names.filter { candidate in
+            guard candidate.hasPrefix(prefix), candidate.hasSuffix(".stage") else { return false }
+            let fields = candidate.dropFirst(prefix.utf8.count).dropLast(".stage".utf8.count).split(separator: ".", omittingEmptySubsequences: false)
+            guard fields.count == 2, let processID = Int32(fields[0]), processID > 0,
+                  String(processID) == fields[0], sessionRetentionHex(String(fields[1]), count: 32),
+                  let current = try sessionRetentionStatusIfPresent(at: candidate, parent: parent) else { return false }
+            return SessionRetentionFingerprint(current) == fingerprint
+        }
+        guard matches.count == 1 else { throw NotikaSessionRetentionError.invalidManifest }
+        try revalidate(parent: parent)
+        return matches[0]
+    }
 }
 
 /// Iterative nofollow age observation, used only for admitted unfinished work.
@@ -516,6 +537,7 @@ private final class SessionRetentionAdmission: Sendable {
     let manifest: SessionRetentionFile
     let privateManifestName: String?
     let authority: SessionRetentionFile?
+    let privateAuthorityName: String?
     let legacyOwner: SessionRetentionOwner?
     let inactiveProgress: Bool
     let nativeUnknown: Bool
@@ -554,6 +576,7 @@ private final class SessionRetentionAdmission: Sendable {
         do { object = try StrictJSONDocument(data: manifest.bytes).root.requireObject() }
         catch { throw NotikaSessionRetentionError.invalidManifest }
         var retainedAuthority: SessionRetentionFile?
+        var retainedAuthorityPrivateName: String?
         var owner: SessionRetentionOwner?
         inactiveProgress = evidenceName != "manifest.json"
         nativeUnknown = inactiveProgress || object.value(forKey: "resourceID") == .string("notika.abandoned-development-session")
@@ -631,23 +654,23 @@ private final class SessionRetentionAdmission: Sendable {
         } else if evidenceName == "development-session.json" {
             do {
                 owner = try sessionRetentionValidateAuthority(object, repository: root.repository.path, name: name, directory: observed)
-                guard manifest.fingerprint.links == 1 else { throw NotikaSessionRetentionError.invalidManifest }
+                privateManifestName = try manifest.legacyStageName(parent: opened)
                 startedAt = try sessionRetentionDate(object, "createdAt")
-                completedAt = nil; expiresAt = nil; privateManifestName = nil
+                completedAt = nil; expiresAt = nil
             } catch { throw NotikaSessionRetentionError.invalidManifest }
         } else if object.value(forKey: "resourceID") == .string("notika.abandoned-development-session") {
             guard !inactiveProgress else { throw NotikaSessionRetentionError.invalidManifest }
             do {
                 let retained = try SessionRetentionFile(name: "development-session.json", parent: opened,
                     maximum: NotikaSessionRetentionCollector.maximumManifestBytes)
+                retainedAuthorityPrivateName = try retained.legacyStageName(parent: opened)
                 owner = try sessionRetentionValidateAbandoned(object, authority: retained,
                     repository: root.repository.path, name: name, directory: observed)
                 retainedAuthority = retained
-                guard manifest.fingerprint.links == 1 else { throw NotikaSessionRetentionError.invalidManifest }
+                privateManifestName = try manifest.legacyStageName(parent: opened)
                 startedAt = try sessionRetentionDate(object, "createdAt")
                 completedAt = try sessionRetentionDate(object, "completedAt")
                 expiresAt = try sessionRetentionDate(object, "expiresAt")
-                privateManifestName = nil
             } catch { throw NotikaSessionRetentionError.invalidManifest }
         } else {
             guard !inactiveProgress, object.value(forKey: "namespace") == nil, object.value(forKey: "resourceID") == nil else {
@@ -655,14 +678,14 @@ private final class SessionRetentionAdmission: Sendable {
             }
             do {
                 try sessionRetentionValidateLegacy(object, repository: root.repository.path, name: name)
-                guard manifest.fingerprint.links == 1 else { throw NotikaSessionRetentionError.invalidManifest }
+                privateManifestName = try manifest.legacyStageName(parent: opened)
                 startedAt = try sessionRetentionDate(object, "createdAt")
                 completedAt = try sessionRetentionDate(object, "completedAt")
                 expiresAt = try sessionRetentionDate(object, "expiresAt")
-                privateManifestName = nil
             } catch { throw NotikaSessionRetentionError.invalidManifest }
         }
         authority = retainedAuthority
+        privateAuthorityName = retainedAuthorityPrivateName
         legacyOwner = owner
         if let completedAt, let expiresAt {
             guard startedAt <= completedAt, completedAt <= expiresAt else { throw NotikaSessionRetentionError.invalidManifest }
@@ -709,6 +732,11 @@ private final class SessionRetentionAdmission: Sendable {
         try inactiveInventory?.revalidate()
         if let privateManifestName {
             guard try SessionRetentionFingerprint(sessionRetentionStatus(at: privateManifestName, parent: descriptor.value)) == manifest.fingerprint else {
+                throw NotikaSessionRetentionError.evidenceChanged
+            }
+        }
+        if let privateAuthorityName, let authority {
+            guard try SessionRetentionFingerprint(sessionRetentionStatus(at: privateAuthorityName, parent: descriptor.value)) == authority.fingerprint else {
                 throw NotikaSessionRetentionError.evidenceChanged
             }
         }
@@ -813,7 +841,7 @@ private func sessionRetentionValidateAbandoned(
                                         "repository", "sourceBeforeHash", "request", "cache", "artifacts", "abandonment"])
     let authorityObject = try StrictJSONDocument(data: authority.bytes).root.requireObject()
     let owner = try sessionRetentionValidateAuthority(authorityObject, repository: repository, name: name, directory: directory)
-    guard authority.fingerprint.links == 1, try sessionRetentionUInt(root, "schemaVersion") == 1,
+    guard try sessionRetentionUInt(root, "schemaVersion") == 1,
           root.value(forKey: "resourceID") == .string("notika.abandoned-development-session"),
           root.value(forKey: "status") == .string("inconclusive"),
           try sessionRetentionString(root, "sessionID").utf8.elementsEqual(name.utf8),

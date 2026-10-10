@@ -412,6 +412,150 @@ struct NotikaSessionRetentionCollectorTests {
         #expect(report.entries.first { $0.name == "legacy-extended" }?.classification == .invalid)
     }
 
+    @Test(arguments: LegacyStageSessionFamily.allCases)
+    func legacyPublicationStageLinksMoveWithOriginalEvidenceBytes(family: LegacyStageSessionFamily) async throws {
+        let fixture = try SessionCollectorFixture()
+        defer { fixture.remove() }
+        let name = "legacy-staged-" + family.rawValue
+        try fixture.legacyStageSession(name, family: family)
+        var originalBytes: [String: Data] = [:]
+        for evidenceName in family.evidenceNames {
+            let evidence = fixture.session(name).appendingPathComponent(evidenceName)
+            let stage = try fixture.legacyStageLink(name, evidenceName: evidenceName)
+            originalBytes[evidenceName] = try Data(contentsOf: evidence)
+            var publicStatus = stat(), privateStatus = stat()
+            try #require(lstat(evidence.path, &publicStatus) == 0)
+            try #require(lstat(stage.path, &privateStatus) == 0)
+            #expect(publicStatus.st_nlink == 2)
+            #expect(publicStatus.st_ino == privateStatus.st_ino)
+            #expect(publicStatus.st_dev == privateStatus.st_dev)
+        }
+        try fixture.ageTree(name, modifiedAt: fixture.yesterday)
+        let preview = try await fixture.collector().run(execute: false)
+        let eligible = try #require(preview.entries.first { $0.name == name })
+        #expect(eligible.action == .wouldTrash)
+        #expect(eligible.retentionSource == .todayOnly)
+        if family == .authority {
+            #expect(eligible.reason == .abandonedBeforeLocalDay)
+            #expect(eligible.manifestDigest == nil)
+        }
+        let mover = SessionCollectorMover(destination: fixture.trash.path)
+        let moved = try await fixture.collector(trash: mover).run(execute: true)
+        #expect(moved.entries.first { $0.name == name }?.action == .trashed)
+        #expect(mover.calls.withLock { $0 } == 1)
+        let retained = fixture.trash.appendingPathComponent(name)
+        for evidenceName in family.evidenceNames {
+            let evidence = retained.appendingPathComponent(evidenceName)
+            let stage = retained.appendingPathComponent(fixture.legacyStageName(evidenceName))
+            #expect(try Data(contentsOf: evidence) == originalBytes[evidenceName])
+            #expect(try Data(contentsOf: stage) == originalBytes[evidenceName])
+            var publicStatus = stat(), privateStatus = stat()
+            try #require(lstat(evidence.path, &publicStatus) == 0)
+            try #require(lstat(stage.path, &privateStatus) == 0)
+            #expect(publicStatus.st_nlink == 2)
+            #expect(publicStatus.st_ino == privateStatus.st_ino)
+        }
+        if family == .authority {
+            #expect(!FileManager.default.fileExists(atPath: retained.appendingPathComponent("manifest.json").path))
+        }
+    }
+
+    @Test(arguments: ["external", "unrecognized", "third-link"])
+    func legacyEvidenceAliasesOutsideThePublicationContractRemainProtected(aliasKind: String) async throws {
+        let fixture = try SessionCollectorFixture()
+        defer { fixture.remove() }
+        var names: [String] = []
+        for family in LegacyStageSessionFamily.allCases {
+            for evidenceName in family.evidenceNames {
+                let name = family.rawValue + "-" + evidenceName
+                names.append(name)
+                try fixture.legacyStageSession(name, family: family)
+                for peer in family.evidenceNames where peer != evidenceName || aliasKind == "third-link" {
+                    _ = try fixture.legacyStageLink(name, evidenceName: peer)
+                }
+                let evidence = fixture.session(name).appendingPathComponent(evidenceName)
+                let alias = aliasKind == "unrecognized"
+                    ? fixture.session(name).appendingPathComponent("unrecognized-" + evidenceName)
+                    : fixture.root.appendingPathComponent(name + "-outside")
+                try FileManager.default.linkItem(at: evidence, to: alias)
+                try fixture.ageTree(name, modifiedAt: fixture.yesterday)
+            }
+        }
+        let mover = SessionCollectorMover(destination: fixture.trash.path)
+        let report = try await fixture.collector(trash: mover).run(execute: true)
+        for name in names {
+            let entry = try #require(report.entries.first { $0.name == name })
+            #expect(entry.reason == .manifestInvalid)
+            #expect(entry.action == NotikaSessionRetentionAction.none)
+            #expect(FileManager.default.fileExists(atPath: fixture.session(name).path))
+        }
+        #expect(mover.calls.withLock { $0 } == 0)
+    }
+
+    @Test(arguments: ["zero-pid", "leading-zero-pid", "overflow-pid", "negative-pid", "uppercase-token", "short-token"])
+    func legacyStageNamesRequireTheExactProducerPIDAndTokenShape(fault: String) async throws {
+        let fixture = try SessionCollectorFixture()
+        defer { fixture.remove() }
+        let name = "malformed-stage"
+        try fixture.legacySession(name)
+        let token = String(repeating: "a", count: 32)
+        let suffix: String
+        switch fault {
+        case "zero-pid": suffix = "0." + token
+        case "leading-zero-pid": suffix = "056835." + token
+        case "overflow-pid": suffix = "2147483648." + token
+        case "negative-pid": suffix = "-1." + token
+        case "uppercase-token": suffix = "56835." + String(repeating: "A", count: 32)
+        default: suffix = "56835." + String(repeating: "a", count: 31)
+        }
+        try FileManager.default.linkItem(at: fixture.manifest(name),
+            to: fixture.session(name).appendingPathComponent(".manifest.json." + suffix + ".stage"))
+        let mover = SessionCollectorMover(destination: fixture.trash.path)
+        let report = try await fixture.collector(trash: mover).run(execute: true)
+        #expect(report.entries.first { $0.name == name }?.reason == .manifestInvalid)
+        #expect(FileManager.default.fileExists(atPath: fixture.manifest(name).path))
+        #expect(mover.calls.withLock { $0 } == 0)
+    }
+
+    @Test(arguments: ["removed", "replaced"])
+    func admittedLegacyStageAliasChangesBlockRevalidation(change: String) async throws {
+        let fixture = try SessionCollectorFixture()
+        defer { fixture.remove() }
+        var targets: [String: String] = [:]
+        for family in LegacyStageSessionFamily.allCases {
+            for evidenceName in family.evidenceNames {
+                let name = family.rawValue + "-" + evidenceName
+                targets[name] = evidenceName
+                try fixture.legacyStageSession(name, family: family)
+                for peer in family.evidenceNames {
+                    _ = try fixture.legacyStageLink(name, evidenceName: peer)
+                }
+                try fixture.ageTree(name, modifiedAt: fixture.yesterday)
+            }
+        }
+        let stageTargets = targets
+        let mover = SessionCollectorMover(destination: fixture.trash.path)
+        let report = try await fixture.collector(trash: mover, beforeRevalidation: { path in
+            let directory = URL(fileURLWithPath: path)
+            let evidenceName = try #require(stageTargets[directory.lastPathComponent])
+            let stage = directory.appendingPathComponent(fixture.legacyStageName(evidenceName))
+            let bytes = try Data(contentsOf: stage)
+            try FileManager.default.removeItem(at: stage)
+            if change == "replaced" {
+                // Identical bytes at the private name do not retain inode custody.
+                try bytes.write(to: stage)
+                try #require(chmod(stage.path, 0o400) == 0)
+            }
+        }).run(execute: true)
+        for name in stageTargets.keys {
+            let entry = try #require(report.entries.first { $0.name == name })
+            #expect(entry.action == .skippedRevalidation)
+            #expect(entry.reason == .evidenceChanged)
+            #expect(FileManager.default.fileExists(atPath: fixture.session(name).path))
+        }
+        #expect(mover.calls.withLock { $0 } == 0)
+    }
+
     @Test func malformedCalendarDateAndMicrosecondFutureCompletionRemainProtected() async throws {
         let fixture = try SessionCollectorFixture()
         defer { fixture.remove() }
@@ -605,6 +749,18 @@ enum StandaloneSessionFamily: CaseIterable, Sendable {
     }
 }
 
+enum LegacyStageSessionFamily: String, CaseIterable, Sendable {
+    case terminal, authority, abandoned
+
+    var evidenceNames: [String] {
+        switch self {
+        case .terminal: ["manifest.json"]
+        case .authority: ["development-session.json"]
+        case .abandoned: ["manifest.json", "development-session.json"]
+        }
+    }
+}
+
 private enum SessionCollectorFixtureError: Error { case io }
 
 private struct SessionCollectorFixture: Sendable {
@@ -628,6 +784,18 @@ private struct SessionCollectorFixture: Sendable {
     }
     func session(_ name: String) -> URL { root.appendingPathComponent("Artifacts/AgentSessions/" + name) }
     func manifest(_ name: String) -> URL { session(name).appendingPathComponent("manifest.json") }
+    func legacyStageSession(_ name: String, family: LegacyStageSessionFamily) throws {
+        if family == .terminal { try legacySession(name) }
+        else { try legacyAuthority(name, createdAt: yesterday, finalized: family == .abandoned) }
+    }
+    func legacyStageName(_ evidenceName: String) -> String {
+        "." + evidenceName + ".56835.5422e094373afbc0899266aa7b758e5b.stage"
+    }
+    func legacyStageLink(_ name: String, evidenceName: String) throws -> URL {
+        let stage = session(name).appendingPathComponent(legacyStageName(evidenceName))
+        try FileManager.default.linkItem(at: session(name).appendingPathComponent(evidenceName), to: stage)
+        return stage
+    }
     func swiftSession(completedAt: Date) async throws -> String {
         let runID = UUID().uuidString
         _ = try await NotikaBuildSession.withSession(canonicalRepository: path, registryRoot: registry, request: request,
