@@ -1,6 +1,14 @@
 {
-  "originHash" : "f4da8cfd87483d532e5eecb0cdcf9960607b88436c780ffc6de34f6fc6b63304",
+  "originHash" : "ac4918cc26990e9936ccfd2e917261d7b10bfda9ad6b3bfcd9ac00caf35e4211",
   "pins" : [
+    {
+      "identity" : "agentlease",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:janodev/agentlease.git",
+      "state" : {
+        "revision" : "db00b7f2b7b307397850ca25d41f33437a7d3d24"
+      }
+    },
     {
       "identity" : "swift-argument-parser",
       "kind" : "remoteSourceControl",

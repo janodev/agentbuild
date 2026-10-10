@@ -1,22 +1,23 @@
 ---
 type: Project
 title: agentbuild
-description: A Swift command-line foundation for coordinated agent build workflows.
+description: A Swift CLI for leased command execution, durable raw logs, and native outcome evidence.
 tags: [swift, cli, builds, agentlease]
 ---
 
 # agentbuild
 
-`agentbuild` is a standalone Swift CLI foundation. It currently provides
-`--help`, `--version`, and `doctor [--json]`. Doctor runs diagnostic tool probes
-through Swift Subprocess. Managed project builds are future work; the CLI does
-not yet replace Notika's development driver.
+`agentbuild` is a standalone Swift CLI. It checks the local toolchain and runs
+explicitly leased commands through Swift Subprocess, saving raw output and
+native outcomes. Project-specific graph, cache, build, test, and launch routes
+remain future work; it does not yet replace Notika's development driver.
 
 ```sh
 agentbuild --help
 agentbuild --version
 agentbuild doctor
 agentbuild doctor --json
+agentbuild run --resource example:fixture -- /usr/bin/printf '%s\n' 'hello'
 ```
 
 Doctor requires successful version probes for `swift`, `xcodebuild`, and
@@ -24,8 +25,21 @@ Doctor requires successful version probes for `swift`, `xcodebuild`, and
 `git` are available on `PATH`. It exits `0` when the required probes succeed
 and `1` otherwise; optional missing tools do not fail the check.
 
-The package uses Swift tools 6.2, Swift 6 language mode, and macOS 27 or later.
-Dependencies are pinned to ArgumentParser 1.8.2 and Subprocess 1.0.0.
+`run` requires an absolute executable and at least one `--resource` or
+`--shared-resource`. Arguments remain literal; specify a shell explicitly when
+needed. Output goes to separate `stdout.log` and `stderr.log` files below
+`Artifacts/AgentBuild/<run-id>/`, alongside an atomic `manifest.json`.
+Use `--artifacts-root`, `--working-directory`, and `--lease-home` for isolated
+workflows, and `--json` for a machine-readable final report.
+
+The CLI preserves child exit codes and reports child signals as `128 + signal`.
+Cancellation waits for direct-child reaping; surviving inheriting descendants
+retain their locks. See the [execution contract](Docs/execution.md) for failure
+codes and lifecycle limits.
+
+The package uses Swift tools 6.4, Swift 6 language mode, and macOS 27 or later.
+ArgumentParser 1.8.2 and Subprocess 1.0.0 are exact dependencies; AgentLeaseCore
+is pinned to a reviewed Git revision.
 
 ## Development
 

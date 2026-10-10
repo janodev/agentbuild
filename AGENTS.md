@@ -14,7 +14,8 @@ tags: [development, agents, testing]
   acquires the account-wide AgentLease `host:compile` resource. Keep the default
   two compiler jobs unless a task requires a different setting.
 - Use Apple Testing for Swift tests. Do not run SwiftFormat or SwiftLint.
-- The current CLI provides diagnostics. Expose managed build routes only after
+- The current CLI provides diagnostics and generic owned command execution.
+  Read `Docs/execution.md` before lifecycle changes. Expose managed build routes only after
   their ownership, cancellation, artifact, and outcome contracts are implemented
   and tested. Notika's Python driver is the reference for those contracts.
 - Install a copied release binary under the per-user opt directory. Never point

@@ -6,10 +6,10 @@ import Foundation
 struct AgentBuildCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentbuild",
-        abstract: "Swift foundation for coordinated agent build workflows.",
-        discussion: "The initial release checks tooling. Managed project build routes are planned.",
+        abstract: "Coordinate owned commands and preserve their native results and logs.",
+        discussion: "Managed project build routes are planned. The run command provides lease-aware execution primitives.",
         version: AgentBuild.version,
-        subcommands: [DoctorCommand.self]
+        subcommands: [DoctorCommand.self, RunCommand.self]
     )
 }
 
