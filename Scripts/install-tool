@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 3 ]; then
+    printf '%s\n' 'Usage: install-tool <release-binary> <install-root> <bin-directory>' >&2
+    exit 2
+fi
+
+agentbuild_source=$1
+agentbuild_root=$2
+agentbuild_bin=$3
+agentbuild_destination="$agentbuild_root/bin/agentbuild"
+agentbuild_link="$agentbuild_bin/agentbuild"
+
+for agentbuild_path in "$agentbuild_root" "$agentbuild_bin"; do
+    case "$agentbuild_path" in
+        /*) ;;
+        *) printf '%s\n' 'Installation paths must be absolute.' >&2; exit 2 ;;
+    esac
+done
+
+if [ ! -f "$agentbuild_source" ] || [ ! -x "$agentbuild_source" ]; then
+    printf '%s\n' 'A built release executable is required.' >&2
+    exit 2
+fi
+
+if [ -e "$agentbuild_destination" ] || [ -L "$agentbuild_destination" ]; then
+    if [ -L "$agentbuild_destination" ] || [ ! -f "$agentbuild_destination" ]; then
+        printf '%s\n' 'The install destination must be a regular executable file.' >&2
+        exit 2
+    fi
+fi
+
+if [ -e "$agentbuild_link" ] || [ -L "$agentbuild_link" ]; then
+    if [ ! -L "$agentbuild_link" ] || [ "$(/usr/bin/readlink "$agentbuild_link")" != "$agentbuild_destination" ]; then
+        printf '%s\n' 'The command path is already occupied; choose a different BIN_DIR.' >&2
+        exit 2
+    fi
+fi
+
+/bin/mkdir -p "$agentbuild_root/bin" "$agentbuild_bin"
+agentbuild_temporary=$(/usr/bin/mktemp "$agentbuild_root/bin/.agentbuild.XXXXXX")
+trap '/bin/rm -f "$agentbuild_temporary"' EXIT HUP INT TERM
+/usr/bin/install -m 755 "$agentbuild_source" "$agentbuild_temporary"
+/bin/mv -f "$agentbuild_temporary" "$agentbuild_destination"
+if [ ! -L "$agentbuild_link" ]; then
+    /bin/ln -s "$agentbuild_destination" "$agentbuild_link"
+fi
+printf 'Installed %s\nCommand link %s\n' "$agentbuild_destination" "$agentbuild_link"

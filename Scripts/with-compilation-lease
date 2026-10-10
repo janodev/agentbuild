@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+if [ "${AGENTLEASE_COMPILE_HOME+x}" = x ]; then
+    agentbuild_registry=$AGENTLEASE_COMPILE_HOME
+else
+    agentbuild_account=$(/usr/bin/id -un)
+    agentbuild_account_record=$(/usr/bin/dscl . -read "/Users/$agentbuild_account" NFSHomeDirectory)
+    agentbuild_account_home=${agentbuild_account_record#NFSHomeDirectory: }
+    case "$agentbuild_account_home" in
+        /*) ;;
+        *) printf '%s\n' 'Cannot resolve effective account home.' >&2; exit 2 ;;
+    esac
+    agentbuild_registry="$agentbuild_account_home/.agentlease"
+fi
+
+case "$agentbuild_registry" in
+    /*) ;;
+    *) printf '%s\n' 'AGENTLEASE_COMPILE_HOME must be nonempty and absolute.' >&2; exit 2 ;;
+esac
+
+if ! command -v agentlease >/dev/null 2>&1; then
+    printf '%s\n' 'Install AgentLease before compiling agentbuild.' >&2
+    exit 2
+fi
+
+exec env AGENTLEASE_HOME="$agentbuild_registry" agentlease run \
+    --resource host:compile --label 'Compile agentbuild' -- "$@"
