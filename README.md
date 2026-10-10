@@ -46,7 +46,7 @@ and `1` otherwise; optional missing tools do not fail the check.
 
 `run` requires an absolute executable and at least one `--resource` or
 `--shared-resource`. Arguments remain literal; specify a shell explicitly when
-needed. Output goes to separate `stdout.log` and `stderr.log` files below
+needed. Output goes to `stdout.log`, `stderr.log`, and `combined.log` below
 `Artifacts/AgentBuild/<run-id>/`, alongside an atomic `manifest.json`.
 Use `--artifacts-root`, `--working-directory`, and `--lease-home` for isolated
 workflows, and `--json` for a machine-readable final report.
@@ -63,7 +63,7 @@ marks planning as unowned and its observations as sequential.
 
 `notika build` invokes every admitted native route directly. It holds the session
 writer, generated graph, compatible cache, and account compilation resources
-in that order. It saves separate raw output streams and native termination;
+in that order. It saves separate and combined raw logs and native termination;
 source drift and publication errors remain separate diagnostics. Test routes
 release compilation before runtime and retain actual result counts. UI and
 Simulator workflows acquire or adopt one outer SimLease boundary; functional
@@ -139,7 +139,7 @@ checkout's `.build` directory.
 The updated `0.3.0` release installation was verified: the copied executable
 matches the built release, its command link targets the opt directory, and
 the tool doctor passes. The [workflow validation record](Docs/notika-workflows.md#validation-record)
-separates completed checks from remaining native validation.
+records the tested workflows, native outcomes, and evidence limits.
 
 This per-user `opt` layout keeps the installed tool separate from source and
 build products. The source checkout can remain at

@@ -3,7 +3,7 @@ type: Development Reference
 title: Notika development workflows
 description: Describes Swift-controlled Make routes, native execution, result evidence, and supervised interactive sessions.
 tags: [notika, xcode, testing, agentlease, workflows]
-status: implemented-validation-pending
+status: implemented
 ---
 
 # Commands
@@ -145,8 +145,8 @@ observations, and environment markers do not confer live lease authority.
 On 10 October 2026, the full Swift controller suite passed 494 tests in 49
 suites in 126.604 seconds in
 [batch 43](../Untracked/Validation/project-foundations-tests-43.log).
-Actual Notika sessions also established the following results; their reports
-remain under Notika's `Artifacts/AgentSessions/`.
+Actual Notika sessions also established the following results. Reports are
+initially published under Notika's `Artifacts/AgentSessions/`.
 
 | Session | Workflow and result |
 | --- | --- |
@@ -154,6 +154,9 @@ remain under Notika's `Artifacts/AgentSessions/`.
 | `2E618D82-23B3-45DD-BF88-E50F933724FE` | Focused `NotebookTemplateMetadataTests`: native exit 0, 9/9 passed, no failures, result publication admitted |
 | `30FA337E-860A-41FF-ADA6-A4E5B27A2435` | Generation: native exit 0, complete admitted generation report |
 | `F44D28C2-BCCA-4E64-88DD-A48F482B4DCC` | macOS launch: native build exit 0; user confirmed the Documents window; user-requested close completed with app and workflow exit 0 |
+| `C8036C09-DAE0-4E78-A156-0F2932D34A35` | SVG Rust tests: native exit 0, 46/46 passed |
+| `1DE6E295-A2C2-4870-9A8A-F1AED47E594A` | LiteParse Rust tests: native exit 0, 6/6 passed |
+| `1A3A73EF-C846-495B-BF69-02565BDDBBA9` | Regeneration after merging BugFixing's MDVault update: all five native phases exited 0; publication admitted |
 
 The updated release installation passed with version `0.3.0` at
 `~/.local/opt/agentbuild/bin/agentbuild`; its command link and tool doctor passed.
@@ -167,11 +170,29 @@ native exit 0, one executed/passing test, admitted results, and no source or
 toolchain drift. It retained the selected paper-guide spacing after notebook
 creation. SimLease deleted its private iPad Air simulator after completion.
 
-DocC's arm64 native build passed in session
-`A6AB7234-B282-4F90-B45E-3DB6117A9CFE`. Its retained rendering/preview pipeline
-and the final preflight remain in progress. The installed release includes
-combined raw capture, historical terminal admission, and cancellable preview
-readiness; these paths passed the full controller suite.
+DocC session `A6AB7234-B282-4F90-B45E-3DB6117A9CFE` completed its native build
+and transform with exit 0. The actual preview served HTTP 200 for HTML and a
+3.76 MB data response identifying Notika. Controlled server cancellation returned
+130; the final manifest and stdout, stderr, and combined captures were complete.
+Closing identities were unavailable after cancellation, so this run does not
+prove absence of source or toolchain drift.
 
-Status remains `implemented-validation-pending` until those two native workflows
-finish. These recorded results do not imply validation of every catalog route.
+The final integrated preflight passed on 11 October 2026 in session
+`FF01BA0F-884F-4404-813B-FEFB260E66E7`: 19 logical checks and 21 native phases,
+all with exit 0, complete stdout/stderr/combined capture, and admitted final
+publication. Python reference/helper suites reported 1,016 passing tests and
+three skips; Rust reported six LiteParse and 46 SVG tests passing, with no
+failures or ignored tests. The 428-test controller reference suite passed in
+411.372 seconds.
+
+An immediate invocation, `0503D0AE-B5FA-4E17-8D3C-C0C488FB7263`, reused the
+same passing receipt with zero native phases. Both invocations completed with
+exit 0 and no orchestration or publication errors. They tested Notika commit
+`d01f2e1b0` with installed controller source commit `df81b35`; later changes to
+this validation record are documentation-only. The receipt key was
+`bf271f4ecdc933a833abcccd449ce590abc3bda9c1566127fa7ec80bfb061c4f`.
+
+The installed release includes combined raw capture, historical terminal
+admission, and cancellable preview readiness. Native execution was validated
+for the listed workflows.
+Session evidence remains subject to the documented daily retention policy.
