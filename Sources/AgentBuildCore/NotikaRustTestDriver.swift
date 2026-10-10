@@ -26,6 +26,12 @@ public struct NotikaRustTestSessionReport: Sendable {
     public let cancelled: Bool
 
     public init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil) throws {
+        try self.init(data: data, expectedRepository: expectedRepository, expectedSessionID: expectedSessionID,
+                      captureAdmissionPolicy: .current)
+    }
+
+    internal init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil,
+                  captureAdmissionPolicy: NativeCaptureAdmissionPolicy) throws {
         let document = try StrictJSONDocument(data: data)
         let root = try document.root.requireObject().project(requiredKeys: [
             "namespace", "schemaVersion", "toolVersion", "sessionID", "runUUID", "repository", "writerResource", "ownerUID", "directoryIdentity",
@@ -47,11 +53,13 @@ public struct NotikaRustTestSessionReport: Sendable {
         let started = try rustDriverDate(root, "startedAt")
         guard let zone = TimeZone(identifier: try controllerString(root, "localTimeZone")) else { throw StrictJSONError.invalidSchema }
         let lifecycle = try controllerString(root, "lifecycle"), status = try controllerString(root, "status")
+        guard captureAdmissionPolicy != .historicalRetention || lifecycle == "terminal" else { throw StrictJSONError.invalidSchema }
         let cancelled = try controllerBool(root, "cancelled"), complete = try controllerBool(root, "executionComplete")
         let failures = try controllerStrings(root, "orchestrationFailures", maximum: 128)
         let publication = try controllerStrings(root, "publicationFailures", maximum: 128)
         let phases = try controllerArray(root, "phases", maximum: 2).map {
-            try controllerValidatePhase($0, repository: repository, sessionPath: repository + "/Artifacts/AgentSessions/" + id)
+            try controllerValidatePhase($0, repository: repository, sessionPath: repository + "/Artifacts/AgentSessions/" + id,
+                                        captureAdmissionPolicy: captureAdmissionPolicy)
         }
         let native = phases.compactMap(\.termination)
         let failed = native.first { controllerExitCode($0) != 0 }

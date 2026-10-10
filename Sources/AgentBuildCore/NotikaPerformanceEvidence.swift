@@ -95,6 +95,19 @@ public final class NotikaPerformanceEvidence: @unchecked Sendable {
         resultReceiptSHA256: String, outerLeaseEvidence: NotikaOuterLeaseEvidence?, sourceHead: String? = nil,
         expectedResultIdentity: NativeWorkingDirectoryIdentity? = nil, allowFixtureAdmission: Bool
     ) throws -> Bool {
+        try validateCanonicalValue(value, request: request, sourceBeforeSHA256: sourceBeforeSHA256,
+            toolchainBeforeSHA256: toolchainBeforeSHA256, sessionPath: sessionPath,
+            resultReceiptSHA256: resultReceiptSHA256, outerLeaseEvidence: outerLeaseEvidence, sourceHead: sourceHead,
+            expectedResultIdentity: expectedResultIdentity, allowFixtureAdmission: allowFixtureAdmission,
+            captureAdmissionPolicy: .current)
+    }
+
+    internal static func validateCanonicalValue(_ value: CanonicalJSONValue, request: NotikaActionRequest,
+        sourceBeforeSHA256: String, toolchainBeforeSHA256: String, sessionPath: String,
+        resultReceiptSHA256: String, outerLeaseEvidence: NotikaOuterLeaseEvidence?, sourceHead: String? = nil,
+        expectedResultIdentity: NativeWorkingDirectoryIdentity? = nil, allowFixtureAdmission: Bool,
+        captureAdmissionPolicy: NativeCaptureAdmissionPolicy
+    ) throws -> Bool {
         let root = try StrictJSONDocument(data: CanonicalJSONDigest.encode(value)).root.requireObject()
         try root.project(requiredKeys: ["schemaVersion", "kind", "complete", "fixtureAdmission", "record", "manifestSHA256",
             "treeSHA256", "exportCapture", "failures"])
@@ -116,7 +129,7 @@ public final class NotikaPerformanceEvidence: @unchecked Sendable {
                   root.value(forKey: "treeSHA256") == .null, !failures.isEmpty else { throw performanceFailure("invalid incomplete performance evidence") }
             if let export = root.value(forKey: "exportCapture"), export != .null {
                 _ = try performanceValidateCapture(export.requireObject(), sessionPath: sessionPath,
-                    expectedResultIdentity: expectedResultIdentity, fixtureAdmission: fixtureAdmission)
+                    expectedResultIdentity: expectedResultIdentity, fixtureAdmission: fixtureAdmission, policy: captureAdmissionPolicy)
             }
             return false
         }
@@ -148,7 +161,7 @@ public final class NotikaPerformanceEvidence: @unchecked Sendable {
         }
         let capture = try root.requiredValue(forKey: "exportCapture").requireObject()
         guard try performanceValidateCapture(capture, sessionPath: sessionPath, expectedResultIdentity: expectedResultIdentity,
-            fixtureAdmission: fixtureAdmission) else { throw performanceFailure("performance export lacks complete native proof") }
+            fixtureAdmission: fixtureAdmission, policy: captureAdmissionPolicy) else { throw performanceFailure("performance export lacks complete native proof") }
         try capture.project(requiredKeys: ["executable", "arguments", "workingDirectory", "argumentSHA256", "workingDirectoryIdentity", "observation", "rawCapture"])
         let actualExecutable = try performanceString(capture, "executable")
         guard actualExecutable == export.executable || fixtureAdmission && actualExecutable == "/bin/sh",
@@ -166,7 +179,8 @@ public final class NotikaPerformanceEvidence: @unchecked Sendable {
         guard observation.value(forKey: "termination") == (try StrictJSONDocument(data: JSONEncoder().encode(RunTermination(kind: .exit, value: 0))).root),
               observation.value(forKey: "retirement") == .string("workerReaped"), observation.value(forKey: "cancelled") == .bool(false),
               observation.value(forKey: "failures") == .array([]) else { throw performanceFailure("performance ancillary export failed") }
-        let raw = try JSONDecoder().decode(NativeLogCaptureResult.self, from: CanonicalJSONDigest.encode(performanceCanonical(capture.requiredValue(forKey: "rawCapture"))))
+        let raw = try admitNativeLogCaptureRecord(capture.requiredValue(forKey: "rawCapture"), sessionPath: sessionPath,
+                                                 policy: captureAdmissionPolicy)
         guard raw.captureComplete, raw.failures.isEmpty, raw.standardOutput.sha256 == export.standardOutputSHA256,
               raw.standardError.sha256 == export.standardErrorSHA256 else { throw performanceFailure("performance raw export incomplete") }
         if canvas {
@@ -533,7 +547,7 @@ private func performanceNumber(_ value: Int64) throws -> StrictJSONNumber {
     return number
 }
 private func performanceValidateCapture(_ capture: StrictJSONObject, sessionPath: String,
-    expectedResultIdentity: NativeWorkingDirectoryIdentity?, fixtureAdmission: Bool
+    expectedResultIdentity: NativeWorkingDirectoryIdentity?, fixtureAdmission: Bool, policy: NativeCaptureAdmissionPolicy
 ) throws -> Bool {
     _ = try capture.project(requiredKeys: ["executable", "arguments", "workingDirectory", "argumentSHA256", "workingDirectoryIdentity", "observation", "rawCapture"])
     guard try performanceString(capture, "workingDirectory").utf8.elementsEqual((sessionPath + "/result.xcresult").utf8) else {
@@ -591,37 +605,10 @@ private func performanceValidateCapture(_ capture: StrictJSONObject, sessionPath
         passed = passed && decoded.termination == RunTermination(kind: .exit, value: 0) && decoded.retirement == .reaped
             && decoded.stopReason == nil && decoded.failures.isEmpty
     }
-    let rawValue = try capture.requiredValue(forKey: "rawCapture")
-    let raw = try rawValue.requireObject().project(requiredKeys: ["standardOutput", "standardError", "maximumBytes", "captureComplete", "failures"])
-    guard case .number(let maximumToken) = raw.value(forKey: "maximumBytes"), case .bool(let complete) = raw.value(forKey: "captureComplete"),
-          case .array(let rawFailures) = raw.value(forKey: "failures") else { throw performanceFailure("invalid raw export fields") }
-    let maximum = try maximumToken.int64()
-    guard (0...(64 * 1_024 * 1_024)).contains(maximum) else { throw performanceFailure("invalid export raw byte limit") }
-    for value in rawFailures {
-        let failure = try value.requireObject().project(requiredKeys: ["operation"], optionalKeys: ["code", "stream", "detail"])
-        let decoded = try JSONDecoder().decode(NativeLogCaptureFailure.self, from: CanonicalJSONDigest.encode(performanceCanonical(.object(failure))))
-        guard !decoded.operation.isEmpty else { throw performanceFailure("empty raw export failure") }
-    }
-    var total: Int64 = 0, streamRoot: String?
-    for (name, leaf) in [("standardOutput", "stdout.log"), ("standardError", "stderr.log")] {
-        let stream = try raw.requiredValue(forKey: name).requireObject().project(requiredKeys: ["path", "observedBytes", "retainedBytes", "sha256", "reachedEOF"])
-        guard case .number(let observedToken) = stream.value(forKey: "observedBytes"),
-              case .number(let retainedToken) = stream.value(forKey: "retainedBytes"),
-              case .bool(let reachedEOF) = stream.value(forKey: "reachedEOF") else { throw performanceFailure("invalid export raw accounting") }
-        let observed = try observedToken.int64(), retained = try retainedToken.int64()
-        let addition = total.addingReportingOverflow(retained)
-        guard retained >= 0, observed >= retained, !addition.overflow, addition.partialValue <= maximum,
-              performanceHex(try performanceString(stream, "sha256"), length: 64) else { throw performanceFailure("invalid export raw accounting") }
-        let path = try performanceString(stream, "path")
-        guard path.utf8.starts(with: (sessionPath + "/").utf8) else { throw performanceFailure("export raw path outside session") }
-        let relative = String(decoding: path.utf8.dropFirst((sessionPath + "/").utf8.count), as: UTF8.self)
-        let components = relative.split(separator: "/", omittingEmptySubsequences: false)
-        guard components.count == 2, UUID(uuidString: String(components[0])) != nil, components[1] == Substring(leaf),
-              streamRoot == nil || streamRoot == String(components[0]) else { throw performanceFailure("invalid export raw path") }
-        streamRoot = String(components[0]); total = addition.partialValue
-        passed = passed && observed == retained && reachedEOF
-    }
-    return passed && complete && rawFailures.isEmpty
+    let raw = try admitNativeLogCaptureRecord(capture.requiredValue(forKey: "rawCapture"),
+        sessionPath: sessionPath, policy: policy)
+    return passed && raw.captureComplete
+
 }
 private func performanceWorkloadFailures(_ value: StrictJSONValue) throws -> [DarwinWorkloadFailure] {
     guard case .array(let values) = value else { throw performanceFailure("invalid process failure list") }

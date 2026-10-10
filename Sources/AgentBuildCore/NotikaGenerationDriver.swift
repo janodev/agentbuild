@@ -29,6 +29,12 @@ public struct NotikaGenerationSessionReport: Sendable {
     public let cancelled: Bool
 
     public init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil) throws {
+        try self.init(data: data, expectedRepository: expectedRepository, expectedSessionID: expectedSessionID,
+                      captureAdmissionPolicy: .current)
+    }
+
+    internal init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil,
+                  captureAdmissionPolicy: NativeCaptureAdmissionPolicy) throws {
         let document = try StrictJSONDocument(data: data)
         let root = try document.root.requireObject().project(requiredKeys: [
             "namespace", "schemaVersion", "toolVersion", "sessionID", "runUUID", "repository", "writerResource",
@@ -56,6 +62,7 @@ public struct NotikaGenerationSessionReport: Sendable {
         let started = try generationDate(root, "startedAt")
         guard let zone = TimeZone(identifier: try generationString(root, "localTimeZone")) else { throw generationSchema("localTimeZone") }
         let lifecycle = try generationString(root, "lifecycle")
+        guard captureAdmissionPolicy != .historicalRetention || lifecycle == "terminal" else { throw generationSchema("historicalRetention") }
         let status = try generationString(root, "status")
         let cancelled = try generationBool(root, "cancelled")
         let cached = try generationBool(root, "cached")
@@ -76,7 +83,7 @@ public struct NotikaGenerationSessionReport: Sendable {
             }
         }
         let phases = try generationPhases(root.requiredValue(forKey: "phases"), repository: repository,
-                                          sessionID: sessionID, cached: cached)
+                                          sessionID: sessionID, cached: cached, policy: captureAdmissionPolicy)
         let native = try generationTermination(root.requiredValue(forKey: "nativeTermination"))
         let nativeFailure = phases.compactMap(\.termination).first { generationExitCode($0) != 0 }
         guard native == (nativeFailure ?? phases.compactMap(\.termination).last) else { throw generationSchema("nativeTermination") }
@@ -406,7 +413,9 @@ private func generationSnapshot(_ source: NotikaSourceIdentity?) throws -> Canon
 }
 
 private struct GenerationParsedPhase { let step: String; let termination: RunTermination?; let succeeded: Bool; let captureAdmitted: Bool; let cancelled: Bool }
-private func generationPhases(_ value: StrictJSONValue, repository: String, sessionID: String, cached: Bool) throws -> [GenerationParsedPhase] {
+private func generationPhases(_ value: StrictJSONValue, repository: String, sessionID: String, cached: Bool,
+    policy: NativeCaptureAdmissionPolicy
+) throws -> [GenerationParsedPhase] {
     guard case .array(let values) = value, values.count <= 5 else { throw generationSchema("phases") }
     let ordered = ["prepare-htt-mini.sh", "prepare-onnxruntime.sh", "retire-Notika.xcodeproj", "retire-Notika.xcworkspace", "tuist-generate"]
     var previous = -1, parsed: [GenerationParsedPhase] = []
@@ -436,33 +445,8 @@ private func generationPhases(_ value: StrictJSONValue, repository: String, sess
         try generationValidateFailures(phase.requiredValue(forKey: "failures"), capture: false)
         let failureData = try CanonicalJSONDigest.encode(generationCanonical(phase.requiredValue(forKey: "failures")))
         let failures = try JSONDecoder().decode([DarwinWorkloadFailure].self, from: failureData)
-        // Validate exact capture shape before Codable, which tolerates unknown fields.
-        let captureObject = try phase.requiredValue(forKey: "rawCapture").requireObject().project(
-            requiredKeys: ["standardOutput", "standardError", "maximumBytes", "captureComplete", "failures"])
-        for name in ["standardOutput", "standardError"] {
-            let stream = try captureObject.requiredValue(forKey: name).requireObject().project(requiredKeys: ["path", "observedBytes", "retainedBytes", "sha256", "reachedEOF"])
-            let path = try generationString(stream, "path")
-            let root = repository + "/Artifacts/AgentSessions/" + sessionID + "/"
-            let relative = path.utf8.starts(with: root.utf8) ? String(path.dropFirst(root.count)) : ""
-            let pieces = relative.split(separator: "/", omittingEmptySubsequences: false)
-            guard pieces.count == 2, UUID(uuidString: String(pieces[0]))?.uuidString.lowercased() == pieces[0].lowercased(),
-                  pieces[1] == (name == "standardOutput" ? "stdout.log" : "stderr.log"),
-                  generationSHA(try generationString(stream, "sha256")),
-                  try generationUnsigned(stream, "retainedBytes") <= generationUnsigned(stream, "observedBytes") else { throw generationSchema("rawLog") }
-            _ = try generationBool(stream, "reachedEOF")
-        }
-        try generationValidateFailures(captureObject.requiredValue(forKey: "failures"), capture: true)
-        let raw = try JSONDecoder().decode(NativeLogCaptureResult.self,
-            from: CanonicalJSONDigest.encode(generationCanonical(.object(captureObject))))
-        guard (0...NativeLogCapture.maximumRawBytes).contains(raw.maximumBytes),
-              (0...raw.maximumBytes).contains(raw.standardOutput.retainedBytes),
-              (0...raw.maximumBytes).contains(raw.standardError.retainedBytes),
-              raw.standardOutput.retainedBytes + raw.standardError.retainedBytes <= raw.maximumBytes else { throw generationSchema("rawCapture") }
-        if raw.captureComplete {
-            guard raw.failures.isEmpty, raw.standardOutput.reachedEOF, raw.standardError.reachedEOF,
-                  raw.standardOutput.observedBytes == raw.standardOutput.retainedBytes,
-                  raw.standardError.observedBytes == raw.standardError.retainedBytes else { throw generationSchema("captureComplete") }
-        }
+        let raw = try admitNativeLogCaptureRecord(phase.requiredValue(forKey: "rawCapture"),
+            sessionPath: repository + "/Artifacts/AgentSessions/" + sessionID, policy: policy)
         let admitted = try generationBool(phase, "publicationAdmitted")
         let succeeded = native == .init(kind: .exit, value: 0) && retirement == "workerReaped" && !cancelled && failures.isEmpty && raw.captureComplete
         parsed.append(.init(step: step, termination: native, succeeded: succeeded, captureAdmitted: admitted && raw.captureComplete, cancelled: cancelled))

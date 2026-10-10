@@ -7,6 +7,7 @@ import Synchronization
 public enum NativeLogStream: String, Codable, Sendable {
     case standardOutput
     case standardError
+    case combined
 }
 
 public struct NativeLogCaptureFailure: Codable, Equatable, Error, Sendable {
@@ -36,6 +37,9 @@ public struct NativeLogStreamResult: Codable, Equatable, Sendable {
 public struct NativeLogCaptureResult: Codable, Equatable, Sendable {
     public let standardOutput: NativeLogStreamResult
     public let standardError: NativeLogStreamResult
+    /// The order in which capture read the two source pipes, preserving every
+    /// observed byte without inventing a cross-process write chronology.
+    public let combined: NativeLogStreamResult
     public let maximumBytes: Int64
     public let captureComplete: Bool
     public let failures: [NativeLogCaptureFailure]
@@ -53,6 +57,7 @@ public final class NativeLogCapture: Sendable {
 
     private let files: CaptureFiles
     private let shared: CaptureSharedState
+    private let readOrder: CaptureReadOrder
     private let outputWorker: CaptureStreamWorker
     private let errorWorker: CaptureStreamWorker
     private let mutationMonitor: CaptureMutationMonitor
@@ -83,10 +88,12 @@ public final class NativeLogCapture: Sendable {
         catch { close(outputPipe.reader); close(outputPipe.writer); throw error }
         self.files = files
         shared = CaptureSharedState(maximumBytes: maximumBytes, writers: [outputPipe.writer, errorPipe.writer], onFailure: onFailure)
+        let readOrder = CaptureReadOrder()
+        self.readOrder = readOrder
         outputWorker = CaptureStreamWorker(stream: .standardOutput, reader: outputPipe.reader,
-                                           files: files, shared: shared, writeChunk: writeChunk)
+                                           files: files, shared: shared, readOrder: readOrder, writeChunk: writeChunk)
         errorWorker = CaptureStreamWorker(stream: .standardError, reader: errorPipe.reader,
-                                          files: files, shared: shared, writeChunk: writeChunk)
+                                          files: files, shared: shared, readOrder: readOrder, writeChunk: writeChunk)
         mutationMonitor = CaptureMutationMonitor(files: files, shared: shared)
         directoryPath = files.artifacts.directoryPath
         standardOutputDescriptor = outputPipe.writer
@@ -138,6 +145,7 @@ public final class NativeLogCapture: Sendable {
         do {
             try files.validate(expected.standardOutput, stream: .standardOutput)
             try files.validate(expected.standardError, stream: .standardError)
+            try files.validate(expected.combined, stream: .combined)
             try files.checkWatch()
             try shared.validatePublicationResult(expected)
         } catch let failure as NativeLogCaptureFailure {
@@ -154,10 +162,12 @@ public final class NativeLogCapture: Sendable {
         mutationMonitor.stop()
         let output = outputWorker.result
         let error = errorWorker.result
+        let combined = readOrder.result(path: files.path(.combined), reachedEOF: output.reachedEOF && error.reachedEOF)
         do {
             try files.armFinalMutationWatch()
             try files.validate(output, stream: .standardOutput)
             try files.validate(error, stream: .standardError)
+            try files.validate(combined, stream: .combined)
             try files.checkWatch()
         } catch let failure as NativeLogCaptureFailure {
             shared.record(failure)
@@ -165,10 +175,14 @@ public final class NativeLogCapture: Sendable {
             shared.record(NativeLogCaptureFailure(operation: "finalValidation", detail: String(describing: error)))
         }
         let failures = shared.failures
+        let observedTotal = output.observedBytes.addingReportingOverflow(error.observedBytes)
+        let retainedTotal = output.retainedBytes.addingReportingOverflow(error.retainedBytes)
         shared.complete(NativeLogCaptureResult(
-            standardOutput: output, standardError: error, maximumBytes: shared.maximumBytes,
-            captureComplete: failures.isEmpty && output.reachedEOF && error.reachedEOF
-                && output.observedBytes == output.retainedBytes && error.observedBytes == error.retainedBytes,
+            standardOutput: output, standardError: error, combined: combined, maximumBytes: shared.maximumBytes,
+            captureComplete: failures.isEmpty && output.reachedEOF && error.reachedEOF && combined.reachedEOF
+                && output.observedBytes == output.retainedBytes && error.observedBytes == error.retainedBytes
+                && combined.observedBytes == combined.retainedBytes && !observedTotal.overflow && !retainedTotal.overflow
+                && combined.observedBytes == observedTotal.partialValue && combined.retainedBytes == retainedTotal.partialValue,
             failures: failures
         ))
     }
@@ -260,7 +274,8 @@ private final class CaptureSharedState: Sendable {
             guard let result = state.finalResult, result.captureComplete,
                   expected == result,
                   expected.standardOutput.path.utf8.elementsEqual(result.standardOutput.path.utf8),
-                  expected.standardError.path.utf8.elementsEqual(result.standardError.path.utf8) else {
+                  expected.standardError.path.utf8.elementsEqual(result.standardError.path.utf8),
+                  expected.combined.path.utf8.elementsEqual(result.combined.path.utf8) else {
                 throw NativeLogCaptureFailure(operation: "publicationRequiresCompleteCachedResult", code: EINVAL)
             }
             if let failure = state.failures.first { throw failure }
@@ -328,20 +343,77 @@ private final class CaptureSharedState: Sendable {
     }
 }
 
+private enum CaptureReadStep: Sendable {
+    case chunk, retry, eof
+    case failure(Int32)
+}
+
+private struct CaptureCombinedObservation {
+    var observedBytes: Int64 = 0
+    var retainedBytes: Int64 = 0
+    var hasher = SHA256()
+
+    mutating func observe(_ count: Int) {
+        let addition = observedBytes.addingReportingOverflow(Int64(count))
+        observedBytes = addition.overflow ? Int64.max : addition.partialValue
+    }
+
+    mutating func append(_ bytes: Data, files: CaptureFiles, shared: CaptureSharedState,
+                         writeChunk: (Int32, Data) -> CaptureWriteObservation) {
+        let write = writeChunk(files.writeDescriptor(.combined), bytes)
+        guard (0...bytes.count).contains(write.bytesWritten) else {
+            shared.record(NativeLogCaptureFailure(operation: "invalidWriteObservation", code: EIO, stream: .combined))
+            return
+        }
+        if write.bytesWritten > 0 {
+            hasher.update(data: bytes.prefix(write.bytesWritten))
+            retainedBytes += Int64(write.bytesWritten)
+        }
+        if let code = write.errorNumber {
+            shared.record(NativeLogCaptureFailure(operation: "writeLog", code: code, stream: .combined))
+        } else if write.bytesWritten != bytes.count {
+            shared.record(NativeLogCaptureFailure(operation: "partialWrite", code: EIO, stream: .combined))
+        }
+    }
+}
+
+/// Readiness waits happen outside this mutex. The actual nonblocking read,
+/// original write, and combined append are one ordered observation; neither
+/// worker can read its next chunk while the other observation is being stored.
+private final class CaptureReadOrder: Sendable {
+    private let observation: Mutex<CaptureCombinedObservation> = Mutex(CaptureCombinedObservation())
+
+    func withRead(_ operation: (inout CaptureCombinedObservation) -> CaptureReadStep) -> CaptureReadStep {
+        observation.withLock { observation in operation(&observation) }
+    }
+
+    func result(path: String, reachedEOF: Bool) -> NativeLogStreamResult {
+        observation.withLock { observation in
+            let hasher = observation.hasher
+            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            return NativeLogStreamResult(path: path, observedBytes: observation.observedBytes,
+                                         retainedBytes: observation.retainedBytes, sha256: digest, reachedEOF: reachedEOF)
+        }
+    }
+}
+
 private final class CaptureStreamWorker: Sendable {
     let stream: NativeLogStream
     private let reader: Int32
     private let files: CaptureFiles
     private let shared: CaptureSharedState
+    private let readOrder: CaptureReadOrder
     private let writeChunk: @Sendable (Int32, Data) -> CaptureWriteObservation
     private let completed: Mutex<NativeLogStreamResult?> = Mutex(nil)
 
     init(stream: NativeLogStream, reader: Int32, files: CaptureFiles, shared: CaptureSharedState,
+         readOrder: CaptureReadOrder,
          writeChunk: @escaping @Sendable (Int32, Data) -> CaptureWriteObservation) {
         self.stream = stream
         self.reader = reader
         self.files = files
         self.shared = shared
+        self.readOrder = readOrder
         self.writeChunk = writeChunk
     }
 
@@ -355,35 +427,53 @@ private final class CaptureStreamWorker: Sendable {
         var hasher = SHA256()
         var eof = false
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
-        while true {
-            let count = buffer.withUnsafeMutableBytes { Darwin.read(reader, $0.baseAddress, $0.count) }
-            if count < 0 {
-                if errno == EINTR { continue }
-                shared.record(NativeLogCaptureFailure(operation: "readPipe", code: errno, stream: stream))
+        draining: while true {
+            if let code = captureWaitReadable(reader) {
+                shared.record(NativeLogCaptureFailure(operation: "waitReadablePipe", code: code, stream: stream))
                 break
             }
-            if count == 0 { eof = true; break }
-            let addition = observed.addingReportingOverflow(Int64(count))
-            observed = addition.overflow ? Int64.max : addition.partialValue
-            do { try files.checkWatch(); try files.validateBindings() }
-            catch let failure as NativeLogCaptureFailure { shared.record(failure) }
-            catch { shared.record(NativeLogCaptureFailure(operation: "captureBinding", detail: String(describing: error))) }
-            let allowed = shared.reserve(count)
-            guard allowed > 0 else { continue }
-            let bytes = Data(buffer.prefix(allowed))
-            let write = writeChunk(files.writeDescriptor(stream), bytes)
-            guard (0...bytes.count).contains(write.bytesWritten) else {
-                shared.record(NativeLogCaptureFailure(operation: "invalidWriteObservation", code: EIO, stream: stream))
-                continue
+            let step = readOrder.withRead { combined in
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(reader, $0.baseAddress, $0.count) }
+                if count < 0 {
+                    let code = errno
+                    if code == EINTR || code == EAGAIN || code == EWOULDBLOCK { return .retry }
+                    return .failure(code)
+                }
+                if count == 0 { return .eof }
+                let addition = observed.addingReportingOverflow(Int64(count))
+                observed = addition.overflow ? Int64.max : addition.partialValue
+                combined.observe(count)
+                do { try files.checkWatch(); try files.validateBindings() }
+                catch let failure as NativeLogCaptureFailure { shared.record(failure) }
+                catch { shared.record(NativeLogCaptureFailure(operation: "captureBinding", detail: String(describing: error))) }
+                // Mirror the admitted prefix without reserving the same input
+                // again. Failures stop retention, while both pipes keep draining.
+                let allowed = shared.reserve(count)
+                guard allowed > 0 else { return .chunk }
+                let bytes = Data(buffer.prefix(allowed))
+                let write = writeChunk(files.writeDescriptor(stream), bytes)
+                if (0...bytes.count).contains(write.bytesWritten) {
+                    if write.bytesWritten > 0 {
+                        hasher.update(data: bytes.prefix(write.bytesWritten))
+                        retained += Int64(write.bytesWritten)
+                    }
+                    if let code = write.errorNumber {
+                        shared.record(NativeLogCaptureFailure(operation: "writeLog", code: code, stream: stream))
+                    } else if write.bytesWritten != bytes.count {
+                        shared.record(NativeLogCaptureFailure(operation: "partialWrite", code: EIO, stream: stream))
+                    }
+                } else {
+                    shared.record(NativeLogCaptureFailure(operation: "invalidWriteObservation", code: EIO, stream: stream))
+                }
+                combined.append(bytes, files: files, shared: shared, writeChunk: writeChunk)
+                return .chunk
             }
-            if write.bytesWritten > 0 {
-                hasher.update(data: bytes.prefix(write.bytesWritten))
-                retained += Int64(write.bytesWritten)
-            }
-            if let code = write.errorNumber {
-                shared.record(NativeLogCaptureFailure(operation: "writeLog", code: code, stream: stream))
-            } else if write.bytesWritten != bytes.count {
-                shared.record(NativeLogCaptureFailure(operation: "partialWrite", code: EIO, stream: stream))
+            switch step {
+            case .chunk, .retry: continue
+            case .eof: eof = true; break draining
+            case .failure(let code):
+                shared.record(NativeLogCaptureFailure(operation: "readPipe", code: code, stream: stream))
+                break draining
             }
         }
         if Darwin.close(reader) != 0 { shared.record(NativeLogCaptureFailure(operation: "closePipeReader", code: errno, stream: stream)) }
@@ -402,6 +492,8 @@ private final class CaptureFiles: Sendable {
     private let directory: Int32
     private let outputReader: Int32
     private let errorReader: Int32
+    private let combinedReader: Int32
+    private let combinedWriter: Int32
     private let watch: Int32
     private let eventAccess: Mutex<NativeLogCaptureFailure?> = Mutex(nil)
 
@@ -422,18 +514,29 @@ private final class CaptureFiles: Sendable {
             let error = Darwin.openat(directoryFD, "stderr.log", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
             guard error >= 0 else { throw captureFailure("openErrorReader") }
             opened.append(error)
+            let combinedWriter = Darwin.openat(directoryFD, "combined.log", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard combinedWriter >= 0 else { throw captureFailure("createCombinedLog", stream: .combined) }
+            opened.append(combinedWriter)
+            guard fchmod(combinedWriter, 0o600) == 0 else { throw captureFailure("setCombinedLogPermissions", stream: .combined) }
+            let combined = Darwin.openat(directoryFD, "combined.log", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard combined >= 0 else { throw captureFailure("openCombinedReader", stream: .combined) }
+            opened.append(combined)
+            while fsync(directoryFD) != 0 { if errno != EINTR { throw captureFailure("syncCaptureDirectory") } }
             let queue = Darwin.kqueue()
             guard queue >= 0 else { throw captureFailure("createCaptureWatch") }
             opened.append(queue)
             guard fcntl(queue, F_SETFD, FD_CLOEXEC) == 0 else { throw captureFailure("setCaptureWatchCloseOnExec") }
             try Self.validateBindings(artifacts: artifacts, root: rootFD, rootPath: rootPath,
-                                      directory: directoryFD, outputReader: output, errorReader: error)
+                                      directory: directoryFD, outputReader: output, errorReader: error,
+                                      combinedReader: combined, combinedWriter: combinedWriter)
             try Self.armWatch(watch: queue, root: rootFD, directory: directoryFD,
-                              outputReader: output, errorReader: error, includeWrites: false)
+                              outputReader: output, errorReader: error, combinedReader: combined, includeWrites: false)
             self.root = rootFD
             directory = directoryFD
             outputReader = output
             errorReader = error
+            combinedReader = combined
+            self.combinedWriter = combinedWriter
             watch = queue
         } catch {
             for descriptor in opened { Darwin.close(descriptor) }
@@ -441,28 +544,47 @@ private final class CaptureFiles: Sendable {
         }
     }
 
-    deinit { for descriptor in [watch, outputReader, errorReader, directory, root] { Darwin.close(descriptor) } }
+    deinit { for descriptor in [watch, outputReader, errorReader, combinedReader, combinedWriter, directory, root] { Darwin.close(descriptor) } }
 
     func path(_ stream: NativeLogStream) -> String {
-        stream == .standardOutput ? artifacts.standardOutputPath : artifacts.standardErrorPath
+        switch stream {
+        case .standardOutput: artifacts.standardOutputPath
+        case .standardError: artifacts.standardErrorPath
+        case .combined: artifacts.directoryPath + "/combined.log"
+        }
     }
 
     func writeDescriptor(_ stream: NativeLogStream) -> Int32 {
-        stream == .standardOutput ? artifacts.stdoutDescriptor : artifacts.stderrDescriptor
+        switch stream {
+        case .standardOutput: artifacts.stdoutDescriptor
+        case .standardError: artifacts.stderrDescriptor
+        case .combined: combinedWriter
+        }
+    }
+
+    private func readDescriptor(_ stream: NativeLogStream) -> Int32 {
+        switch stream {
+        case .standardOutput: outputReader
+        case .standardError: errorReader
+        case .combined: combinedReader
+        }
     }
 
     func validateBindings() throws {
         try Self.validateBindings(artifacts: artifacts, root: root, rootPath: rootPath,
-                                  directory: directory, outputReader: outputReader, errorReader: errorReader)
+                                  directory: directory, outputReader: outputReader, errorReader: errorReader,
+                                  combinedReader: combinedReader, combinedWriter: combinedWriter)
     }
 
     private static func validateBindings(artifacts: SessionArtifacts, root: Int32, rootPath: String,
-                                         directory: Int32, outputReader: Int32, errorReader: Int32) throws {
+                                         directory: Int32, outputReader: Int32, errorReader: Int32,
+                                         combinedReader: Int32, combinedWriter: Int32) throws {
         try artifacts.revalidateRootCustody()
         try captureDirectoryBinding(descriptor: root, path: rootPath, privateMode: false)
         try captureDirectoryBinding(descriptor: directory, path: artifacts.directoryPath, privateMode: true)
         for (name, writer, reader) in [("stdout.log", artifacts.stdoutDescriptor, outputReader),
-                                       ("stderr.log", artifacts.stderrDescriptor, errorReader)] {
+                                       ("stderr.log", artifacts.stderrDescriptor, errorReader),
+                                       ("combined.log", combinedWriter, combinedReader)] {
             let file = try captureStat(writer, operation: "statLogWriter")
             let read = try captureStat(reader, operation: "statLogReader")
             var entry = stat()
@@ -479,7 +601,8 @@ private final class CaptureFiles: Sendable {
             try checkWatchLocked(&failure)
             do {
                 try Self.armWatch(watch: watch, root: root, directory: directory,
-                                  outputReader: outputReader, errorReader: errorReader, includeWrites: includeWrites)
+                                  outputReader: outputReader, errorReader: errorReader,
+                                  combinedReader: combinedReader, includeWrites: includeWrites)
             } catch let error as NativeLogCaptureFailure {
                 failure = error
                 throw error
@@ -488,9 +611,9 @@ private final class CaptureFiles: Sendable {
     }
 
     private static func armWatch(watch: Int32, root: Int32, directory: Int32,
-                                 outputReader: Int32, errorReader: Int32, includeWrites: Bool) throws {
+                                 outputReader: Int32, errorReader: Int32, combinedReader: Int32, includeWrites: Bool) throws {
         var changes: [kevent] = []
-        for descriptor in [root, directory, outputReader, errorReader] {
+        for descriptor in [root, directory, outputReader, errorReader, combinedReader] {
             var event = kevent()
             event.ident = UInt(descriptor)
             event.filter = Int16(EVFILT_VNODE)
@@ -500,7 +623,7 @@ private final class CaptureFiles: Sendable {
             // captures and publication files. Watch its binding, not its
             // changing link count. Private capture entries remain sealed.
             if descriptor != root { event.fflags |= UInt32(NOTE_LINK) }
-            if includeWrites && [outputReader, errorReader].contains(descriptor) {
+            if includeWrites && [outputReader, errorReader, combinedReader].contains(descriptor) {
                 event.fflags |= UInt32(NOTE_WRITE | NOTE_EXTEND)
             }
             changes.append(event)
@@ -535,7 +658,7 @@ private final class CaptureFiles: Sendable {
     func validate(_ result: NativeLogStreamResult, stream: NativeLogStream) throws {
         try checkWatch()
         try validateBindings()
-        let descriptor = stream == .standardOutput ? outputReader : errorReader
+        let descriptor = readDescriptor(stream)
         let writer = writeDescriptor(stream)
         while fsync(writer) != 0 { if errno != EINTR { throw captureFailure("syncLog", stream: stream) } }
         let before = try captureStat(descriptor, operation: "statFinalLog")
@@ -587,7 +710,24 @@ private func capturePipe() throws -> (reader: Int32, writer: Int32) {
             throw failure
         }
     }
+    let flags = fcntl(descriptors[0], F_GETFL)
+    guard flags >= 0, fcntl(descriptors[0], F_SETFL, flags | O_NONBLOCK) == 0 else {
+        let failure = captureFailure("setCaptureReaderNonblocking")
+        for descriptor in descriptors { Darwin.close(descriptor) }
+        throw failure
+    }
     return (descriptors[0], descriptors[1])
+}
+
+private func captureWaitReadable(_ descriptor: Int32) -> Int32? {
+    var event = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
+    while true {
+        let count = Darwin.poll(&event, 1, -1)
+        if count < 0 { if errno == EINTR { continue }; return errno }
+        if count == 0 { continue }
+        if event.revents & Int16(POLLNVAL) != 0 { return EBADF }
+        return nil
+    }
 }
 
 private func captureFailure(_ operation: String, stream: NativeLogStream? = nil) -> NativeLogCaptureFailure {

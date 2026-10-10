@@ -15,8 +15,8 @@ Generation, exact-product macOS launch, DocC, direct Rust tests, preflight, and
 today-only cache/session maintenance are Swift-owned workflows. The former
 Python controller remains a test behavior reference without a live fallback.
 
-The core preserves literal arguments, explicit resource ownership, separate raw
-streams, actual native outcomes, and source/result evidence boundaries.
+The core preserves literal arguments, explicit resource ownership, per-stream
+and combined raw logs, actual native outcomes, and source/result evidence boundaries.
 See the [project foundations](Docs/project-foundations.md) for ownership,
 process retirement, raw-log custody, and source/result evidence boundaries.
 
@@ -136,10 +136,10 @@ The default installation is
 Installation copies a release binary; it does not point into the source
 checkout's `.build` directory.
 
-The initial `0.3.0` installation was verified. Final release installation
-remains pending the DocC destination fix and its validation. The latest tool
-suite passed 487 tests in 49 suites; the [workflow validation record](Docs/notika-workflows.md#validation-record)
-separates that result from completed and pending native workflows.
+The updated `0.3.0` release installation was verified: the copied executable
+matches the built release, its command link targets the opt directory, and
+the tool doctor passes. The [workflow validation record](Docs/notika-workflows.md#validation-record)
+separates completed checks from remaining native validation.
 
 This per-user `opt` layout keeps the installed tool separate from source and
 build products. The source checkout can remain at

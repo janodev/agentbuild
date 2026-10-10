@@ -579,12 +579,22 @@ public struct NotikaDevelopmentPreflightEvidence: Sendable {
         _ value: CanonicalJSONValue, request: NotikaActionRequest, sourceBeforeSHA256: String,
         sessionPath: String, allowFixtureAdmission: Bool = false
     ) throws -> (succeeded: Bool, nativeFailure: RunTermination?, cancelled: Bool) {
+        try validateCanonicalValue(value, request: request, sourceBeforeSHA256: sourceBeforeSHA256,
+            sessionPath: sessionPath, allowFixtureAdmission: allowFixtureAdmission, captureAdmissionPolicy: .current)
+    }
+
+    internal static func validateCanonicalValue(
+        _ value: CanonicalJSONValue, request: NotikaActionRequest, sourceBeforeSHA256: String,
+        sessionPath: String, allowFixtureAdmission: Bool = false, captureAdmissionPolicy: NativeCaptureAdmissionPolicy
+    ) throws -> (succeeded: Bool, nativeFailure: RunTermination?, cancelled: Bool) {
         guard NotikaDevelopmentPreflight.requiresPreflight(for: request) else { throw StrictJSONError.invalidSchema }
-        return try validateSnapshot(value, sourceBeforeSHA256: sourceBeforeSHA256, sessionPath: sessionPath, allowFixtureAdmission: allowFixtureAdmission)
+        return try validateSnapshot(value, sourceBeforeSHA256: sourceBeforeSHA256, sessionPath: sessionPath,
+            allowFixtureAdmission: allowFixtureAdmission, captureAdmissionPolicy: captureAdmissionPolicy)
     }
 
     internal static func validateSnapshot(_ value: CanonicalJSONValue, sourceBeforeSHA256: String, sessionPath: String,
-                                          allowFixtureAdmission: Bool = false) throws -> (succeeded: Bool, nativeFailure: RunTermination?, cancelled: Bool) {
+        allowFixtureAdmission: Bool = false, captureAdmissionPolicy: NativeCaptureAdmissionPolicy = .current
+    ) throws -> (succeeded: Bool, nativeFailure: RunTermination?, cancelled: Bool) {
         guard preflightDigest(sourceBeforeSHA256) else { throw StrictJSONError.invalidSchema }
         let marker = "/Artifacts/AgentSessions/"
         guard let range = sessionPath.range(of: marker, options: .backwards),
@@ -599,7 +609,7 @@ public struct NotikaDevelopmentPreflightEvidence: Sendable {
         guard try controllerString(root, "namespace") == "agentbuild.notika-development-preflight",
               try controllerInteger(root, "schemaVersion") == 1 else { throw StrictJSONError.invalidSchema }
         let phaseValues = try controllerArray(root, "phases", maximum: 21)
-        let phases = try phaseValues.map { try controllerValidatePhase($0, repository: repository, sessionPath: sessionPath) }
+        let phases = try phaseValues.map { try controllerValidatePhase($0, repository: repository, sessionPath: sessionPath, captureAdmissionPolicy: captureAdmissionPolicy) }
         let rustValues = try controllerArray(root, "rustReports", maximum: 2)
         let rust = try rustValues.map { try controllerValidateRustReport($0, repository: repository, sessionPath: sessionPath) }
         let failures = try controllerStrings(root, "orchestrationFailures", maximum: 128)
@@ -789,7 +799,9 @@ internal struct ControllerParsedPhase {
     let command: CanonicalJSONValue; let outcome: NotikaPreflightCommandOutcome
     var termination: RunTermination? { outcome.nativeTermination }; var cancelled: Bool { outcome.cancelled }; var succeeded: Bool { outcome.succeeded }
 }
-internal func controllerValidatePhase(_ value: StrictJSONValue, repository: String, sessionPath: String) throws -> ControllerParsedPhase {
+internal func controllerValidatePhase(_ value: StrictJSONValue, repository: String, sessionPath: String,
+    captureAdmissionPolicy: NativeCaptureAdmissionPolicy = .current
+) throws -> ControllerParsedPhase {
     let phase = try value.requireObject().project(requiredKeys: ["command", "nativeTermination", "retirement", "cancelled", "failures", "rawCapture"])
     let command = try controllerValidateCommand(phase.requiredValue(forKey: "command"), repository: repository)
     let native = try controllerTermination(phase.requiredValue(forKey: "nativeTermination"))
@@ -797,28 +809,9 @@ internal func controllerValidatePhase(_ value: StrictJSONValue, repository: Stri
     guard NotikaNativeRetirementEvidence(rawValue: retirement) != nil,
           (retirement == "workerReaped") == (native != nil) else { throw StrictJSONError.invalidSchema }
     let failures = try controllerFailures(phase.requiredValue(forKey: "failures"), capture: false)
-    let rawObject = try phase.requiredValue(forKey: "rawCapture").requireObject().project(requiredKeys: ["standardOutput", "standardError", "maximumBytes", "captureComplete", "failures"])
-    for name in ["standardOutput", "standardError"] {
-        let stream = try rawObject.requiredValue(forKey: name).requireObject().project(requiredKeys: ["path", "observedBytes", "retainedBytes", "sha256", "reachedEOF"])
-        let path = try controllerString(stream, "path"), prefix = sessionPath + "/"
-        let relative = path.utf8.starts(with: prefix.utf8) ? String(path.dropFirst(prefix.count)) : ""
-        let pieces = relative.split(separator: "/", omittingEmptySubsequences: false)
-        guard pieces.count == 2, UUID(uuidString: String(pieces[0])) != nil,
-              pieces[1] == (name == "standardOutput" ? "stdout.log" : "stderr.log"),
-              preflightDigest(try controllerString(stream, "sha256")),
-              try controllerUnsigned(stream, "retainedBytes") <= controllerUnsigned(stream, "observedBytes") else { throw StrictJSONError.invalidSchema }
-        _ = try controllerBool(stream, "reachedEOF")
-    }
-    _ = try controllerFailures(rawObject.requiredValue(forKey: "failures"), capture: true)
-    let raw = try JSONDecoder().decode(NativeLogCaptureResult.self, from: CanonicalJSONDigest.encode(controllerCanonical(.object(rawObject))))
-    guard (0...NativeLogCapture.maximumRawBytes).contains(raw.maximumBytes),
-          (0...raw.maximumBytes).contains(raw.standardOutput.retainedBytes), (0...raw.maximumBytes).contains(raw.standardError.retainedBytes),
-          raw.standardOutput.retainedBytes + raw.standardError.retainedBytes <= raw.maximumBytes else { throw StrictJSONError.invalidSchema }
-    if raw.captureComplete {
-        guard raw.failures.isEmpty, raw.standardOutput.reachedEOF, raw.standardError.reachedEOF,
-              raw.standardOutput.observedBytes == raw.standardOutput.retainedBytes,
-              raw.standardError.observedBytes == raw.standardError.retainedBytes else { throw StrictJSONError.invalidSchema }
-    } else { guard !failures.isEmpty else { throw StrictJSONError.invalidSchema } }
+    let raw = try admitNativeLogCaptureRecord(phase.requiredValue(forKey: "rawCapture"),
+        sessionPath: sessionPath, policy: captureAdmissionPolicy)
+    if !raw.captureComplete { guard !failures.isEmpty else { throw StrictJSONError.invalidSchema } }
     return .init(command: command, outcome: .init(nativeTermination: native, retirementProven: retirement == "workerReaped" || retirement == "notStarted",
         cancelled: try controllerBool(phase, "cancelled"), failures: failures))
 }

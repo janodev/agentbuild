@@ -98,6 +98,7 @@ struct NotikaBuildCommand: AsyncParsableCommand {
             for capture in result.rawCaptures {
                 print("stdout: \(capture.standardOutput.path)")
                 print("stderr: \(capture.standardError.path)")
+                print("combined: \(capture.combined.path)")
             }
         }
         for failure in result.orchestrationFailures { writeError("Build diagnostic: \(failure)") }

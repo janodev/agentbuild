@@ -205,21 +205,38 @@ struct NotikaDocumentationDriverTests {
         if kind == "source" { #expect(result.report?.payload.sourceChanged == true) }
     }
 
-    @Test func previewServesLoopbackAndRetainsOwnershipUntilNativeRetirement() async throws {
+    @Test(arguments: [false, true])
+    func previewServesLoopbackAndRetainsOwnershipUntilNativeRetirement(delayedStartup: Bool) async throws {
         let fixture = try DocumentationDriverFixture()
         defer { fixture.remove() }
         let ready = Mutex<NotikaDocumentationPreviewEvidence?>(nil)
+        let previewStarted = Mutex<ContinuousClock.Instant?>(nil)
+        let driver = NotikaDocumentationDriver(identityCapture: fixture.capture,
+            captureOperation: { helper, command, descriptors, root, directory in
+                if command.arguments.first == "_notika-doc-preview" {
+                    previewStarted.withLock { $0 = ContinuousClock.now }
+                    // Allowed validation work must not expire the former 15s
+                    // readiness timer while the admitted helper is starting.
+                    if delayedStartup { try await Task.sleep(for: .seconds(16)) }
+                }
+                return try await CapturedNativePhaseRunner().run(helperExecutable: helper, command: command,
+                    retainedLockDescriptors: descriptors, nativeWorkingDirectoryDescriptor: directory, artifactRoot: root)
+            })
         let port = try documentationUnusedLoopbackPort()
-        let task = Task { try await fixture.driver.run(repository: fixture.path, mode: .preview, helperExecutable: fixture.helper,
+        let task = Task { try await driver.run(repository: fixture.path, mode: .preview, helperExecutable: fixture.helper,
             registryRoot: fixture.registry, environment: fixture.environment, rendererRoot: fixture.renderer, previewPort: port,
             onPreviewReady: { evidence in ready.withLock { $0 = evidence } }) }
         defer { task.cancel() }
-        let deadline = ContinuousClock.now + .seconds(20)
+        let deadline = ContinuousClock.now + .seconds(30)
         while ready.withLock({ $0 == nil }) {
             guard ContinuousClock.now < deadline else { task.cancel(); _ = try await task.value; throw DocumentationDriverFixture.Failure.deadline }
             try await Task.sleep(for: .milliseconds(10))
         }
         let evidence = try #require(ready.withLock { $0 })
+        if delayedStartup {
+            let started = try #require(previewStarted.withLock { $0 })
+            #expect(started.duration(to: ContinuousClock.now) >= .seconds(16))
+        }
         #expect(evidence.host == "127.0.0.1")
         #expect(try !fixture.available("notika:sessions:" + fixture.path))
         #expect(try !fixture.available(CacheCompatibilityIdentity.graphResourceName(canonicalWorktree: fixture.path)))
@@ -240,6 +257,11 @@ struct NotikaDocumentationDriverTests {
         #expect(result.rawCaptures.count == 3)
         let capturesComplete = result.rawCaptures.allSatisfy(\.captureComplete)
         #expect(capturesComplete)
+        let previewPhase = try #require(result.report?.payload.phases.last)
+        #expect(previewPhase.step == .preview)
+        #expect(previewPhase.processID == evidence.processID)
+        #expect(previewPhase.retirement == "workerReaped")
+        #expect(previewPhase.cancelled)
         #expect(kill(evidence.processID, 0) == -1 && errno == ESRCH)
         #expect(try fixture.available("notika:sessions:" + fixture.path))
         #expect(try fixture.available(CacheCompatibilityIdentity.graphResourceName(canonicalWorktree: fixture.path)))

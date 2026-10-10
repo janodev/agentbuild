@@ -7,6 +7,30 @@ import Testing
 
 @Suite("Notika today-only session collector")
 struct NotikaSessionRetentionCollectorTests {
+    @Test func historicalTwoStreamTerminalIsRetentionEligibleWithoutCurrentCombinedAuthority() async throws {
+        let fixture = try SessionCollectorFixture()
+        defer { fixture.remove() }
+        let name = try await fixture.historicalGenerationWithTwoRawStreams()
+        let bytes = try Data(contentsOf: fixture.manifest(name))
+        #expect(throws: (any Error).self) { try NotikaGenerationSessionReport(data: bytes) }
+        let historical = try NotikaGenerationSessionReport(data: bytes, expectedRepository: fixture.path,
+            expectedSessionID: name, captureAdmissionPolicy: .historicalRetention)
+        #expect(historical.nativeTermination == RunTermination(kind: .exit, value: 29))
+        #expect(historical.exitCode == 29)
+        #expect(historical.status == "failed")
+        let root = try StrictJSONDocument(data: historical.originalData).root.requireObject()
+        guard case .array(let phases) = try root.requiredValue(forKey: "phases"), let phase = phases.first else {
+            Issue.record("Historical phase missing"); return
+        }
+        let raw = try phase.requireObject().requiredValue(forKey: "rawCapture")
+        #expect(try admitNativeLogCaptureRecord(raw, sessionPath: fixture.session(name).path, policy: .historicalRetention).combined == nil)
+        let preview = try await fixture.collector().run(execute: false)
+        #expect(preview.entries.first { $0.name == name }?.action == .wouldTrash)
+        let moved = try await fixture.collector().run(execute: true)
+        #expect(moved.entries.first { $0.name == name }?.action == .trashed)
+        #expect(try Data(contentsOf: fixture.trash.appendingPathComponent(name + "/manifest.json")) == bytes)
+    }
+
     @Test(arguments: StandaloneSessionFamily.allCases)
     func priorDayInactiveStandaloneProgressMovesWithoutInventingNativeCompletion(family: StandaloneSessionFamily) async throws {
         let fixture = try SessionCollectorFixture()
@@ -169,19 +193,23 @@ struct NotikaSessionRetentionCollectorTests {
     }
 
     @Test(arguments: StandaloneSessionFamily.allCases)
-    func incompleteFutureAndExplicitlyKeptStandaloneSessionsStayProtected(family: StandaloneSessionFamily) async throws {
+    func misplacedProgressFutureAndExplicitlyKeptStandaloneSessionsStayProtected(family: StandaloneSessionFamily) async throws {
         let fixture = try SessionCollectorFixture()
         defer { fixture.remove() }
-        let incomplete = try await fixture.standaloneSession(family, completedAt: nil)
+        let misplacedProgress = try await fixture.standaloneSession(family, completedAt: nil)
         let future = try await fixture.standaloneSession(family, completedAt: fixture.now.addingTimeInterval(3_600))
         let kept = try await fixture.standaloneSession(family, completedAt: fixture.yesterday)
         try fixture.keep(kept, expiresAt: fixture.now.addingTimeInterval(86_400))
-        let progress = fixture.session(incomplete).appendingPathComponent("in-progress.json")
-        try Data(contentsOf: progress).write(to: fixture.manifest(incomplete))
-        guard chmod(fixture.manifest(incomplete).path, 0o400) == 0 else { throw SessionCollectorFixtureError.io }
+        // A progress record copied to the terminal name is malformed final
+        // evidence. Historical raw admission is restricted to terminal records.
+        let progress = fixture.session(misplacedProgress).appendingPathComponent("in-progress.json")
+        try Data(contentsOf: progress).write(to: fixture.manifest(misplacedProgress))
+        guard chmod(fixture.manifest(misplacedProgress).path, 0o400) == 0 else { throw SessionCollectorFixtureError.io }
         let mover = SessionCollectorMover(destination: fixture.trash.path)
         let report = try await fixture.collector(trash: mover).run(execute: true)
-        #expect(report.entries.first { $0.name == incomplete }?.classification == .incomplete)
+        #expect(report.entries.first { $0.name == misplacedProgress }?.classification == .invalid)
+        #expect(report.entries.first { $0.name == misplacedProgress }?.reason == .manifestInvalid)
+        #expect(report.entries.first { $0.name == misplacedProgress }?.action == NotikaSessionRetentionAction.none)
         #expect(report.entries.first { $0.name == future }?.reason == .lifecycleInFuture)
         #expect(report.entries.first { $0.name == kept }?.retentionSource == .keep)
         #expect(report.entries.first { $0.name == kept }?.classification == .retained)
@@ -642,6 +670,37 @@ private struct SessionCollectorFixture: Sendable {
         }
         if completedAt == nil { try ageTree(runID, modifiedAt: yesterday) }
         return runID
+    }
+    func historicalGenerationWithTwoRawStreams() async throws -> String {
+        let name = try await standaloneSession(.generation, completedAt: yesterday)
+        let capture = session(name).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: capture, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        func stream(_ leaf: String, _ bytes: Data) throws -> CanonicalJSONValue {
+            let path = capture.appendingPathComponent(leaf)
+            try bytes.write(to: path); guard chmod(path.path, 0o600) == 0 else { throw SessionCollectorFixtureError.io }
+            return .object(["path": .string(path.path), "observedBytes": .integer(Int64(bytes.count)),
+                "retainedBytes": .integer(Int64(bytes.count)), "sha256": .string(CanonicalJSONDigest.digest(bytes)), "reachedEOF": .bool(true)])
+        }
+        let raw = CanonicalJSONValue.object(["standardOutput": try stream("stdout.log", Data("stdout".utf8)),
+            "standardError": try stream("stderr.log", Data("stderr".utf8)), "maximumBytes": .integer(NativeLogCapture.maximumRawBytes),
+            "captureComplete": .bool(true), "failures": .array([])])
+        let termination = CanonicalJSONValue.object(["kind": .string("exit"), "value": .integer(29)])
+        let phase = CanonicalJSONValue.object(["step": .string("prepare-htt-mini.sh"),
+            "command": .object(["executable": .string(path + "/Scripts/bridges/prepare-htt-mini.sh"), "arguments": .array([]),
+                "workingDirectory": .string(path), "environmentSHA256": .string(CanonicalJSONDigest.digest(Data()))]),
+            "nativeTermination": termination, "retirement": .string("workerReaped"), "cancelled": .bool(false),
+            "failures": .array([]), "rawCapture": raw, "publicationAdmitted": .bool(true)])
+        guard case .object(let original) = try sessionCollectorCanonical(StrictJSONDocument(data: Data(contentsOf: manifest(name))).root) else {
+            throw SessionCollectorFixtureError.io
+        }
+        let replacements: [String: CanonicalJSONValue] = ["phases": .array([phase]), "nativeTermination": termination,
+            "status": .string("failed"), "exitCode": .integer(29)]
+        let changed = CanonicalJSONValue.object(original.map { .init(key: $0.key, value: replacements[$0.key] ?? $0.value) })
+        guard chmod(manifest(name).path, 0o600) == 0 else { throw SessionCollectorFixtureError.io }
+        try CanonicalJSONDigest.encode(changed).write(to: manifest(name))
+        guard chmod(manifest(name).path, 0o400) == 0 else { throw SessionCollectorFixtureError.io }
+        try ageTree(name, modifiedAt: yesterday)
+        return name
     }
     func collector(
         trash: (any ArtifactTrashOperator)? = nil,

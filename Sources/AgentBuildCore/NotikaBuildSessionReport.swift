@@ -10,6 +10,96 @@ public enum NotikaBuildSessionError: Error, Equatable, Sendable {
     case io(operation: String, code: Int32)
 }
 
+/// Historical decoding is only for closed-session retention. It cannot mint a
+/// live capture or establish that an unrecorded combined log exists.
+internal enum NativeCaptureAdmissionPolicy: Equatable, Sendable {
+    case current
+    case historicalRetention
+}
+
+internal struct NativeLogCaptureRecord: Codable, Sendable {
+    let standardOutput: NativeLogStreamResult
+    let standardError: NativeLogStreamResult
+    let combined: NativeLogStreamResult?
+    let maximumBytes: Int64
+    let captureComplete: Bool
+    let failures: [NativeLogCaptureFailure]
+
+    init(_ capture: NativeLogCaptureResult) {
+        standardOutput = capture.standardOutput
+        standardError = capture.standardError
+        combined = capture.combined
+        maximumBytes = capture.maximumBytes
+        captureComplete = capture.captureComplete
+        failures = capture.failures
+    }
+}
+
+/// Validates the descriptor-free record; retained capture objects separately
+/// establish file custody. Hashes commit the three actual files independently.
+internal func admitNativeLogCaptureRecord(
+    _ value: StrictJSONValue, sessionPath: String,
+    policy: NativeCaptureAdmissionPolicy = .current
+) throws -> NativeLogCaptureRecord {
+    let fields = ["standardOutput", "standardError", "maximumBytes", "captureComplete", "failures"]
+    let object = try value.requireObject().project(
+        requiredKeys: policy == .current ? fields + ["combined"] : fields,
+        optionalKeys: policy == .historicalRetention ? ["combined"] : []
+    )
+    guard case .array(let failures) = try object.requiredValue(forKey: "failures"), failures.count <= 128 else {
+        throw StrictJSONError.invalidSchema
+    }
+    for failure in failures {
+        let object = try failure.requireObject().project(requiredKeys: ["operation"], optionalKeys: ["code", "stream", "detail"])
+        let decoded = try JSONDecoder().decode(NativeLogCaptureFailure.self, from: CanonicalJSONDigest.encode(sessionCanonical(.object(object))))
+        guard !decoded.operation.isEmpty else { throw StrictJSONError.invalidSchema }
+    }
+    var directory: Data?
+    for (field, leaf) in [("standardOutput", "stdout.log"), ("standardError", "stderr.log"), ("combined", "combined.log")] {
+        guard let value = object.value(forKey: field) else { continue }
+        let stream = try value.requireObject().project(requiredKeys: ["path", "observedBytes", "retainedBytes", "sha256", "reachedEOF"])
+        let path = try sessionString(stream, "path"), prefix = sessionPath + "/"
+        guard path.utf8.starts(with: prefix.utf8), !path.utf8.contains(0), sessionHex(try sessionString(stream, "sha256")) else {
+            throw StrictJSONError.invalidSchema
+        }
+        let relative = String(decoding: path.utf8.dropFirst(prefix.utf8.count), as: UTF8.self)
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, UUID(uuidString: String(parts[0])) != nil,
+              parts[1].utf8.elementsEqual(leaf.utf8) else { throw StrictJSONError.invalidSchema }
+        let current = Data(parts[0].utf8)
+        guard directory == nil || directory == current else { throw StrictJSONError.invalidSchema }
+        directory = current
+    }
+    let record = try JSONDecoder().decode(NativeLogCaptureRecord.self,
+        from: CanonicalJSONDigest.encode(sessionCanonical(.object(object))))
+    guard nativeLogCaptureRecordAccountingIsValid(record, policy: policy) else { throw StrictJSONError.invalidSchema }
+    return record
+}
+
+internal func nativeLogCaptureRecordAccountingIsValid(
+    _ raw: NativeLogCaptureRecord, policy: NativeCaptureAdmissionPolicy = .current
+) -> Bool {
+    guard (0...NativeLogCapture.maximumRawBytes).contains(raw.maximumBytes), raw.failures.count <= 128,
+          raw.combined != nil || policy == .historicalRetention else { return false }
+    let streams = [raw.standardOutput, raw.standardError] + (raw.combined.map { [$0] } ?? [])
+    guard streams.allSatisfy({ $0.observedBytes >= 0 && $0.retainedBytes >= 0
+        && $0.retainedBytes <= $0.observedBytes && $0.retainedBytes <= raw.maximumBytes }) else { return false }
+    let retained = raw.standardOutput.retainedBytes.addingReportingOverflow(raw.standardError.retainedBytes)
+    guard !retained.overflow, retained.partialValue <= raw.maximumBytes else { return false }
+    if let combined = raw.combined {
+        let observed = raw.standardOutput.observedBytes.addingReportingOverflow(raw.standardError.observedBytes)
+        guard !observed.overflow, combined.observedBytes == observed.partialValue,
+              combined.reachedEOF == (raw.standardOutput.reachedEOF && raw.standardError.reachedEOF) else { return false }
+    }
+    if raw.captureComplete {
+        guard raw.failures.isEmpty, streams.allSatisfy({ $0.reachedEOF && $0.retainedBytes == $0.observedBytes }) else { return false }
+        if let combined = raw.combined {
+            guard combined.retainedBytes == retained.partialValue else { return false }
+        }
+    }
+    return true
+}
+
 /// Inputs observed by the trusted coordinator. Retained capsules, rather than
 /// copied log paths, supply publication authority for native raw evidence.
 public struct NotikaBuildSessionTerminalEvidence: Sendable {
@@ -95,6 +185,12 @@ public struct NotikaBuildSessionReport: Sendable {
     public let destination: String
 
     public init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil) throws {
+        try self.init(data: data, expectedRepository: expectedRepository, expectedSessionID: expectedSessionID,
+                      captureAdmissionPolicy: .current)
+    }
+
+    internal init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil,
+                  captureAdmissionPolicy: NativeCaptureAdmissionPolicy) throws {
         let document = try StrictJSONDocument(data: data)
         let root = try document.root.requireObject().project(requiredKeys: Self.fields,
             optionalKeys: ["resultEvidence", "resultPreparation", "destination", "outerLeaseEvidence", "resultConsumer", "performanceEvidence",
@@ -134,6 +230,7 @@ public struct NotikaBuildSessionReport: Sendable {
         try sessionValidateExecutionContext(request: request, destination: destination, outerValue: outerValue)
         let started = try sessionDate(root, "startedAt")
         let lifecycle = try sessionString(root, "lifecycle")
+        guard captureAdmissionPolicy != .historicalRetention || lifecycle == "terminal" else { throw sessionSchema("historicalRetention") }
         let status = try sessionString(root, "status")
         let cancelled = try sessionBool(root, "cancelled")
         let failures = try sessionStringArray(root, "orchestrationFailures")
@@ -175,18 +272,18 @@ public struct NotikaBuildSessionReport: Sendable {
         let observations = try sessionValidateObservations(root.requiredValue(forKey: "phaseObservations"), phases: phases)
         let logs = try sessionValidateRawLogs(root.requiredValue(forKey: "rawLogReports"), observations: observations,
                                              phases: phases, repository: repository,
-                                             sessionPath: repository + "/Artifacts/AgentSessions/" + session)
+                                             sessionPath: repository + "/Artifacts/AgentSessions/" + session, policy: captureAdmissionPolicy)
         let resultValue = root.value(forKey: "resultEvidence") ?? .null
         let resultPreparationValue = root.value(forKey: "resultPreparation") ?? .null
         let resultPreparationCancelled = try sessionValidateResultPreparation(resultPreparationValue,
-            resultValue: resultValue, request: request, sessionPath: repository + "/Artifacts/AgentSessions/" + session)
+            resultValue: resultValue, request: request, sessionPath: repository + "/Artifacts/AgentSessions/" + session, policy: captureAdmissionPolicy)
         let resultPasses = try sessionValidateResultEvidence(resultValue, root: root, request: request,
             destination: destination, identity: admittedIdentity, phases: phases, observations: observations,
-            sessionPath: repository + "/Artifacts/AgentSessions/" + session)
+            sessionPath: repository + "/Artifacts/AgentSessions/" + session, policy: captureAdmissionPolicy)
         let sessionPath = repository + "/Artifacts/AgentSessions/" + session
         let resultConsumerValue = root.value(forKey: "resultConsumer") ?? .null
         let consumerPasses = try sessionValidateConsumers(resultConsumerValue, resultValue: resultValue,
-            request: request, sessionPath: sessionPath)
+            request: request, sessionPath: sessionPath, policy: captureAdmissionPolicy)
         let preflightValue = root.value(forKey: "preflightEvidence") ?? .null
         let sourceValue = try root.requiredValue(forKey: "sourceBefore")
         let sourceHash = sourceValue == .null ? nil : try sessionString(sourceValue.requireObject(), "sha256")
@@ -195,14 +292,14 @@ public struct NotikaBuildSessionReport: Sendable {
         let performanceValue = root.value(forKey: "performanceEvidence") ?? .null
         let performancePasses = try sessionValidatePerformance(performanceValue, resultValue: resultValue,
             request: request, sourceHash: sourceHash, toolchainHash: toolchainHash, sessionPath: sessionPath,
-            sourceValue: sourceValue, outerValue: outerValue)
-        let preflight = try sessionValidatePreflight(preflightValue, request: request, sourceHash: sourceHash, sessionPath: sessionPath)
+            sourceValue: sourceValue, outerValue: outerValue, policy: captureAdmissionPolicy)
+        let preflight = try sessionValidatePreflight(preflightValue, request: request, sourceHash: sourceHash, sessionPath: sessionPath, policy: captureAdmissionPolicy)
         let preparationValue = root.value(forKey: "simulatorPreparation") ?? .null
         let preparation = try sessionValidatePreparation(preparationValue, request: request, destination: destination,
-            repository: repository, sessionPath: sessionPath, ui: false)
+            repository: repository, sessionPath: sessionPath, ui: false, policy: captureAdmissionPolicy)
         let uiPreparationValue = root.value(forKey: "uiPreparation") ?? .null
         let uiPreparation = try sessionValidatePreparation(uiPreparationValue, request: request, destination: destination,
-            repository: repository, sessionPath: sessionPath, ui: true)
+            repository: repository, sessionPath: sessionPath, ui: true, policy: captureAdmissionPolicy)
         guard cancelled || (!preflight.cancelled && !preparation.cancelled && !uiPreparation.cancelled && !resultPreparationCancelled) else {
             throw sessionSchema("cancelled")
         }
@@ -644,7 +741,7 @@ private func sessionValidateFailure(_ value: StrictJSONValue) throws {
 private struct SessionAdmittedLog { let captureComplete: Bool; let publicationAdmitted: Bool }
 private func sessionValidateRawLogs(
     _ value: StrictJSONValue, observations: [SessionAdmittedObservation], phases: [StrictJSONObject],
-    repository: String, sessionPath: String
+    repository: String, sessionPath: String, policy: NativeCaptureAdmissionPolicy
 ) throws -> [SessionAdmittedLog] {
     guard case .array(let values) = value, values.count == observations.count else { throw sessionSchema("rawLogReports") }
     return try values.enumerated().map { index, value in
@@ -652,7 +749,7 @@ private func sessionValidateRawLogs(
             "physicalOrdinal", "publicationAdmitted", "commandAdmission", "command", "capture",
         ])
         guard try sessionInteger(report, "physicalOrdinal") == Int64(index) else { throw sessionSchema("rawLogOrdinal") }
-        let complete = try sessionValidateCapture(report.requiredValue(forKey: "capture"), sessionPath: sessionPath)
+        let complete = try sessionValidateCapture(report.requiredValue(forKey: "capture"), sessionPath: sessionPath, policy: policy)
         let admitted = try sessionBool(report, "publicationAdmitted")
         guard !admitted || complete else { throw sessionSchema("publicationAdmitted") }
         let command = try sessionValidateCommand(report.requiredValue(forKey: "command"))
@@ -709,35 +806,10 @@ private func sessionValidateCommand(_ value: StrictJSONValue) throws -> StrictJS
     return command
 }
 
-private func sessionValidateCapture(_ value: StrictJSONValue, sessionPath: String) throws -> Bool {
-    let capture = try value.requireObject().project(requiredKeys: [
-        "standardOutput", "standardError", "maximumBytes", "captureComplete", "failures",
-    ])
-    let maximum = try sessionInteger(capture, "maximumBytes")
-    guard (0...NativeLogCapture.maximumRawBytes).contains(maximum),
-          case .array(let failures) = try capture.requiredValue(forKey: "failures") else { throw sessionSchema("capture") }
-    for failure in failures { try sessionValidateFailure(failure) }
-    let complete = try sessionBool(capture, "captureComplete")
-    var total: Int64 = 0
-    var paths: [String] = []
-    for field in ["standardOutput", "standardError"] {
-        let stream = try capture.requiredValue(forKey: field).requireObject().project(requiredKeys: [
-            "path", "observedBytes", "retainedBytes", "sha256", "reachedEOF",
-        ])
-        let path = try sessionString(stream, "path")
-        guard path.utf8.starts(with: (sessionPath + "/").utf8),
-              !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
-              !path.contains("//"), !path.utf8.contains(0),
-              sessionHex(try sessionString(stream, "sha256")) else { throw sessionSchema("rawLogPath") }
-        paths.append(path)
-        let observed = try sessionInteger(stream, "observedBytes"), retained = try sessionInteger(stream, "retainedBytes")
-        let eof = try sessionBool(stream, "reachedEOF")
-        guard observed >= 0, retained >= 0, retained <= observed, retained <= maximum else { throw sessionSchema("rawLogBytes") }
-        total += retained
-        if complete, !eof || retained != observed || !failures.isEmpty { throw sessionSchema("captureComplete") }
-    }
-    guard total <= maximum, !paths[0].utf8.elementsEqual(paths[1].utf8) else { throw sessionSchema("capture") }
-    return complete
+private func sessionValidateCapture(
+    _ value: StrictJSONValue, sessionPath: String, policy: NativeCaptureAdmissionPolicy
+) throws -> Bool {
+    try admitNativeLogCaptureRecord(value, sessionPath: sessionPath, policy: policy).captureComplete
 }
 
 internal func sessionSupportsRequest(_ request: NotikaActionRequest) -> Bool {
@@ -787,7 +859,8 @@ private func sessionAncillaryObject(_ value: StrictJSONValue) throws -> (StrictJ
 }
 
 private func sessionValidateConsumers(
-    _ value: StrictJSONValue, resultValue: StrictJSONValue, request: NotikaActionRequest, sessionPath: String
+    _ value: StrictJSONValue, resultValue: StrictJSONValue, request: NotikaActionRequest, sessionPath: String,
+    policy: NativeCaptureAdmissionPolicy
 ) throws -> Bool {
     guard value != .null else { return false }
     guard resultValue != .null else { throw sessionSchema("resultConsumer.resultEvidence") }
@@ -797,7 +870,7 @@ private func sessionValidateConsumers(
     let passed = try NotikaResultConsumerEvidence.validateCanonicalValue(
         sessionCanonical(object.requiredValue(forKey: "evidence")), request: request,
         resultReceiptSHA256: receipt, sessionPath: sessionPath, expectedResultIdentity: identity,
-        allowFixtureAdmission: fixture || !admitted)
+        allowFixtureAdmission: fixture || !admitted, captureAdmissionPolicy: policy)
     return admitted && passed
 }
 
@@ -817,7 +890,8 @@ private func sessionResultProbeIdentity(_ resultValue: StrictJSONValue) throws -
 
 private func sessionValidatePerformance(
     _ value: StrictJSONValue, resultValue: StrictJSONValue, request: NotikaActionRequest,
-    sourceHash: String?, toolchainHash: String?, sessionPath: String, sourceValue: StrictJSONValue, outerValue: StrictJSONValue
+    sourceHash: String?, toolchainHash: String?, sessionPath: String, sourceValue: StrictJSONValue, outerValue: StrictJSONValue,
+    policy: NativeCaptureAdmissionPolicy
 ) throws -> Bool {
     guard value != .null else { return false }
     guard let sourceHash, let toolchainHash, resultValue != .null else { throw sessionSchema("performanceEvidence.inputs") }
@@ -830,19 +904,20 @@ private func sessionValidatePerformance(
         sourceBeforeSHA256: sourceHash, toolchainBeforeSHA256: toolchainHash, sessionPath: sessionPath,
         resultReceiptSHA256: sessionString(resultValue.requireObject(), "receiptSHA256"),
         outerLeaseEvidence: outer, sourceHead: sourceHead, expectedResultIdentity: sessionResultProbeIdentity(resultValue),
-        allowFixtureAdmission: fixture || !admitted)
+        allowFixtureAdmission: fixture || !admitted, captureAdmissionPolicy: policy)
     return admitted && passed
 }
 
 private func sessionValidatePreflight(
-    _ value: StrictJSONValue, request: NotikaActionRequest, sourceHash: String?, sessionPath: String
+    _ value: StrictJSONValue, request: NotikaActionRequest, sourceHash: String?, sessionPath: String,
+    policy: NativeCaptureAdmissionPolicy
 ) throws -> (succeeded: Bool, nativeFailure: RunTermination?, cancelled: Bool) {
     guard value != .null else { return (false, nil, false) }
     guard let sourceHash else { throw sessionSchema("preflightEvidence.sourceBefore") }
     let (object, admitted, fixture) = try sessionAncillaryObject(value)
     let observed = try NotikaDevelopmentPreflightEvidence.validateCanonicalValue(
         sessionCanonical(object.requiredValue(forKey: "evidence")), request: request,
-        sourceBeforeSHA256: sourceHash, sessionPath: sessionPath, allowFixtureAdmission: fixture || !admitted)
+        sourceBeforeSHA256: sourceHash, sessionPath: sessionPath, allowFixtureAdmission: fixture || !admitted, captureAdmissionPolicy: policy)
     return (admitted && observed.succeeded, observed.nativeFailure, observed.cancelled)
 }
 
@@ -880,7 +955,8 @@ private func sessionResultPreparationValue(_ failure: NotikaResultPreparationFai
 /// A refused initial result probe remains diagnostic. No receipt, bundle
 /// admission or passing counts can be derived from these recorded paths.
 private func sessionValidateResultPreparation(
-    _ value: StrictJSONValue, resultValue: StrictJSONValue, request: NotikaActionRequest, sessionPath: String
+    _ value: StrictJSONValue, resultValue: StrictJSONValue, request: NotikaActionRequest, sessionPath: String,
+    policy: NativeCaptureAdmissionPolicy
 ) throws -> Bool {
     guard value != .null else { return false }
     guard request.expectsResultBundle, resultValue == .null else { throw sessionSchema("resultPreparation.resultEvidence") }
@@ -894,7 +970,7 @@ private func sessionValidateResultPreparation(
     guard try !sessionBool(probe, "publicationAdmitted") else { throw sessionSchema("resultPreparation.admission") }
     try sessionRequireString(probe, "commandAdmission", "diagnostic")
     _ = try sessionValidateCommand(probe.requiredValue(forKey: "command"))
-    _ = try sessionValidateCapture(probe.requiredValue(forKey: "capture"), sessionPath: sessionPath)
+    _ = try sessionValidateCapture(probe.requiredValue(forKey: "capture"), sessionPath: sessionPath, policy: policy)
     let directory = try probe.requiredValue(forKey: "directoryIdentity")
     if directory != .null {
         let identity = try directory.requireObject().project(requiredKeys: ["device", "inode", "owner", "mode"])
@@ -907,7 +983,7 @@ private func sessionValidateResultPreparation(
 
 private func sessionValidatePreparation(
     _ value: StrictJSONValue, request: NotikaActionRequest, destination: String, repository: String, sessionPath: String,
-    ui: Bool
+    ui: Bool, policy: NativeCaptureAdmissionPolicy
 ) throws -> (succeeded: Bool, nativeFailure: RunTermination?, cancelled: Bool) {
     guard value != .null else { return (false, nil, false) }
     let field = ui ? "uiPreparation" : "simulatorPreparation"
@@ -915,7 +991,7 @@ private func sessionValidatePreparation(
           !ui || NotikaBuildCoordinator.requiresUIPreparation(for: request) else { throw sessionSchema(field + ".platform") }
     let object = try value.requireObject().project(requiredKeys: ["publicationAdmitted", "commandAdmission", "command", "native", "capture"])
     let admitted = try sessionBool(object, "publicationAdmitted")
-    let complete = try sessionValidateCapture(object.requiredValue(forKey: "capture"), sessionPath: sessionPath)
+    let complete = try sessionValidateCapture(object.requiredValue(forKey: "capture"), sessionPath: sessionPath, policy: policy)
     let command = try sessionValidateCommand(object.requiredValue(forKey: "command"))
     let native = try sessionValidateNativeObservation(object.requiredValue(forKey: "native"))
     let admission = try sessionString(object, "commandAdmission")
@@ -1022,7 +1098,7 @@ private func sessionResultEvidenceValue(
 private func sessionValidateResultEvidence(
     _ value: StrictJSONValue, root: StrictJSONObject, request: NotikaActionRequest, destination: String,
     identity: CacheCompatibilityIdentity?, phases: [StrictJSONObject], observations: [SessionAdmittedObservation],
-    sessionPath: String
+    sessionPath: String, policy: NativeCaptureAdmissionPolicy
 ) throws -> Bool {
     guard value != .null else { return false }
     guard request.expectsResultBundle, let identity else { throw sessionSchema("resultEvidence.request") }
@@ -1096,7 +1172,7 @@ private func sessionValidateResultEvidence(
         let probe = try probeValue.requireObject().project(requiredKeys: [
             "publicationAdmitted", "commandAdmission", "command", "directoryIdentity", "native", "capture",
         ])
-        let complete = try sessionValidateCapture(probe.requiredValue(forKey: "capture"), sessionPath: sessionPath)
+        let complete = try sessionValidateCapture(probe.requiredValue(forKey: "capture"), sessionPath: sessionPath, policy: policy)
         let probeAdmitted = try sessionBool(probe, "publicationAdmitted")
         let admission = try sessionString(probe, "commandAdmission")
         let command = try sessionValidateCommand(probe.requiredValue(forKey: "command"))

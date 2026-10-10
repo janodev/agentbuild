@@ -47,6 +47,12 @@ public struct NotikaDocumentationSessionReport: Sendable {
     internal let payload: DocumentationReportPayload
 
     public init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil) throws {
+        try self.init(data: data, expectedRepository: expectedRepository, expectedSessionID: expectedSessionID,
+                      captureAdmissionPolicy: .current)
+    }
+
+    internal init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil,
+                  captureAdmissionPolicy: NativeCaptureAdmissionPolicy) throws {
         let document = try StrictJSONDocument(data: data)
         let payload = try JSONDecoder().decode(DocumentationReportPayload.self, from: data)
         let value = try documentationCanonical(document.root)
@@ -71,6 +77,7 @@ public struct NotikaDocumentationSessionReport: Sendable {
             throw documentationSchema("session")
         }
         let started = try documentationDate(payload.startedAt)
+        guard captureAdmissionPolicy != .historicalRetention || payload.lifecycle == "terminal" else { throw documentationSchema("historicalRetention") }
         for snapshot in [payload.sourceBefore, payload.sourceAfter, payload.toolchainBefore, payload.toolchainAfter].compactMap({ $0 }) {
             try snapshot.validate()
         }
@@ -107,7 +114,7 @@ public struct NotikaDocumentationSessionReport: Sendable {
                   phase.failures.count <= 128 else { throw documentationSchema("phase") }
             if index > 0, !payload.phases[index - 1].succeeded { throw documentationSchema("phaseOrder") }
             if let termination = phase.nativeTermination { try documentationValidateTermination(termination) }
-            let captureDirectory = try documentationValidateCapture(phase.rawCapture, session: session)
+            let captureDirectory = try documentationValidateCapture(phase.rawCapture, session: session, policy: captureAdmissionPolicy)
             guard captureDirectories.insert(captureDirectory).inserted else { throw documentationSchema("captureReuse") }
             if phase.publicationAdmitted && !phase.rawCapture.captureComplete { throw documentationSchema("captureAdmission") }
             if phase.step == .docbuild {
@@ -238,7 +245,7 @@ internal struct DocumentationPhaseRecord: Codable, Sendable {
     let step: DocumentationStep; let command: DocumentationCommand
     let processID: Int32?
     let nativeTermination: RunTermination?; let retirement: String; let cancelled: Bool
-    let failures: [DarwinWorkloadFailure]; let rawCapture: NativeLogCaptureResult; let publicationAdmitted: Bool
+    let failures: [DarwinWorkloadFailure]; let rawCapture: NativeLogCaptureRecord; let publicationAdmitted: Bool
     var succeeded: Bool {
         nativeTermination == .init(kind: .exit, value: 0) && retirement == "workerReaped"
             && !cancelled && failures.isEmpty && rawCapture.captureComplete
@@ -462,7 +469,7 @@ private final class DocumentationState: Sendable {
             DocumentationPhaseRecord(step: step, command: try documentationCommand(phase.command),
                 processID: phase.observation.processIdentifier,
                 nativeTermination: phase.observation.termination, retirement: phase.observation.retirement.rawValue,
-                cancelled: phase.observation.cancelled, failures: phase.observation.failures, rawCapture: phase.rawCapture,
+                cancelled: phase.observation.cancelled, failures: phase.observation.failures, rawCapture: NativeLogCaptureRecord(phase.rawCapture),
                 publicationAdmitted: admitted && phase.rawCapture.captureComplete)
         }
         func artifact(_ name: String) -> DocumentationArtifact? {
@@ -577,7 +584,9 @@ private func documentationRunPreview(session: NotikaControllerSessionArtifacts, 
         group.addTask { do { return .capture(.success(try await operation())) } catch { return .capture(.failure(error)) } }
         group.addTask {
             do {
-                let deadline = ContinuousClock.now + .seconds(15)
+                // Readiness follows bounded whole-site verification. Its cost
+                // scales with the archive; helper retirement and cancellation
+                // govern this wait, rather than a socket-start wall-clock limit.
                 while true {
                     try Task.checkCancellation()
                     let directory = try RetainedArtifactDirectory(path: session.path, requiredPermissions: 0o700)
@@ -592,7 +601,6 @@ private func documentationRunPreview(session: NotikaControllerSessionArtifacts, 
                               ready.site == session.path + "/site", ready.siteTreeSHA256 == expected.sha256 else { throw documentationSchema("previewReady") }
                         return .ready(.success((ready, file)))
                     } catch RetainedArtifactError.systemCall(_, ENOENT) {}
-                    guard ContinuousClock.now < deadline else { throw NotikaDocumentationDriverError.previewNotReady }
                     try await Task.sleep(for: .milliseconds(25))
                 }
             } catch { return .ready(.failure(error)) }
@@ -713,29 +721,14 @@ private func documentationSourceProjection(_ snapshot: DocumentationSnapshot?, r
         projectGraphDigest: string(object, "projectGraphDigest"), generatedGraphDigest: string(object, "generatedGraphDigest"),
         resolvedDependenciesDigest: string(object, "resolvedDependenciesDigest"), keyMaterial: value)
 }
-private func documentationValidateCapture(_ raw: NativeLogCaptureResult, session: String) throws -> String {
-    guard (0...NativeLogCapture.maximumRawBytes).contains(raw.maximumBytes), raw.failures.count <= 128 else { throw documentationSchema("rawCapture") }
-    var total: Int64 = 0
-    var captureDirectory: String?
-    for (stream, suffix) in [(raw.standardOutput, "stdout.log"), (raw.standardError, "stderr.log")] {
-        let prefix = session + "/"
-        let relative = stream.path.utf8.starts(with: prefix.utf8) ? String(stream.path.dropFirst(prefix.count)) : ""
-        let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2, UUID(uuidString: String(parts[0]))?.uuidString.lowercased() == parts[0].lowercased(),
-              parts[1] == suffix, documentationSHA(stream.sha256),
-              stream.observedBytes >= 0, stream.retainedBytes >= 0, stream.retainedBytes <= stream.observedBytes,
-              stream.retainedBytes <= raw.maximumBytes else { throw documentationSchema("rawStream") }
-        let directory = String(parts[0])
-        if let captureDirectory, captureDirectory != directory { throw documentationSchema("captureDirectory") }
-        captureDirectory = directory
-        total += stream.retainedBytes
-        if raw.captureComplete {
-            guard stream.reachedEOF, stream.retainedBytes == stream.observedBytes, raw.failures.isEmpty else { throw documentationSchema("captureComplete") }
-        }
-    }
-    guard total <= raw.maximumBytes else { throw documentationSchema("rawBytes") }
-    return captureDirectory!
+private func documentationValidateCapture(
+    _ raw: NativeLogCaptureRecord, session: String, policy: NativeCaptureAdmissionPolicy
+) throws -> String {
+    let value = try StrictJSONDocument(data: JSONEncoder().encode(raw)).root
+    let admitted = try admitNativeLogCaptureRecord(value, sessionPath: session, policy: policy)
+    return URL(fileURLWithPath: admitted.standardOutput.path).deletingLastPathComponent().lastPathComponent
 }
+
 private func documentationValidateCommitment(_ value: NotikaDocumentationTreeCommitment) throws {
     guard value.algorithm == "notika.docc-owned-tree.sha256.v1", documentationSHA(value.sha256),
           (0...NotikaDocumentationTree.maximumEntries).contains(value.entries),

@@ -26,6 +26,12 @@ public struct NotikaPreflightSessionReport: Sendable {
     public let cancelled: Bool
 
     public init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil) throws {
+        try self.init(data: data, expectedRepository: expectedRepository, expectedSessionID: expectedSessionID,
+                      captureAdmissionPolicy: .current)
+    }
+
+    internal init(data: Data, expectedRepository: String? = nil, expectedSessionID: String? = nil,
+                  captureAdmissionPolicy: NativeCaptureAdmissionPolicy) throws {
         let document = try StrictJSONDocument(data: data)
         let root = try document.root.requireObject().project(requiredKeys: [
             "namespace", "schemaVersion", "toolVersion", "sessionID", "runUUID", "repository", "writerResource", "ownerUID", "directoryIdentity",
@@ -46,6 +52,7 @@ public struct NotikaPreflightSessionReport: Sendable {
         let started = try preflightDriverDate(root, "startedAt")
         guard let zone = TimeZone(identifier: try controllerString(root, "localTimeZone")) else { throw StrictJSONError.invalidSchema }
         let lifecycle = try controllerString(root, "lifecycle"), status = try controllerString(root, "status")
+        guard captureAdmissionPolicy != .historicalRetention || lifecycle == "terminal" else { throw StrictJSONError.invalidSchema }
         let cancelled = try controllerBool(root, "cancelled"), complete = try controllerBool(root, "executionComplete")
         let failures = try controllerStrings(root, "orchestrationFailures", maximum: 128)
         let publication = try controllerStrings(root, "publicationFailures", maximum: 128)
@@ -64,7 +71,8 @@ public struct NotikaPreflightSessionReport: Sendable {
                 inner = (false, nil, stopped)
             } else {
                 inner = try NotikaDevelopmentPreflightEvidence.validateSnapshot(controllerCanonical(evidence),
-                    sourceBeforeSHA256: controllerString(root, "sourceBeforeSHA256"), sessionPath: repository + "/Artifacts/AgentSessions/" + id)
+                    sourceBeforeSHA256: controllerString(root, "sourceBeforeSHA256"), sessionPath: repository + "/Artifacts/AgentSessions/" + id,
+                    captureAdmissionPolicy: captureAdmissionPolicy)
                 let object = try evidence.requireObject()
                 native = try controllerArray(object, "phases", maximum: 21).compactMap { try controllerTermination($0.requireObject().requiredValue(forKey: "nativeTermination")) }
             }

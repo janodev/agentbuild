@@ -40,7 +40,7 @@ struct NativeLogCaptureTests {
         #expect(child.terminationStatus == 0)
         #expect(result.captureComplete)
         #expect(result.failures.isEmpty)
-        #expect(result.standardOutput.reachedEOF && result.standardError.reachedEOF)
+        #expect(result.standardOutput.reachedEOF && result.standardError.reachedEOF && result.combined.reachedEOF)
         #expect(result.standardOutput.observedBytes == output.count)
         #expect(result.standardOutput.retainedBytes == output.count)
         #expect(result.standardError.observedBytes == error.count)
@@ -49,10 +49,15 @@ struct NativeLogCaptureTests {
         #expect(result.standardError.sha256 == CanonicalJSONDigest.digest(error))
         #expect(try Data(contentsOf: URL(fileURLWithPath: result.standardOutput.path)) == output)
         #expect(try Data(contentsOf: URL(fileURLWithPath: result.standardError.path)) == error)
+        let combined = try Data(contentsOf: URL(fileURLWithPath: result.combined.path))
+        #expect(result.combined.observedBytes == output.count + error.count)
+        #expect(result.combined.retainedBytes == output.count + error.count)
+        #expect(combined.count == output.count + error.count)
+        #expect(result.combined.sha256 == CanonicalJSONDigest.digest(combined))
         var directory = stat()
         #expect(lstat(capture.directoryPath, &directory) == 0)
         #expect(directory.st_mode & 0o777 == 0o700)
-        for path in [result.standardOutput.path, result.standardError.path] {
+        for path in [result.standardOutput.path, result.standardError.path, result.combined.path] {
             var file = stat()
             #expect(lstat(path, &file) == 0)
             #expect(file.st_mode & S_IFMT == S_IFREG)
@@ -60,6 +65,32 @@ struct NativeLogCaptureTests {
             #expect(file.st_nlink == 1)
         }
         #expect(await capture.finishAfterWorkerRetirement() == result)
+        try capture.revalidateForPublication(result)
+    }
+
+    @Test func combinedLogPreservesObservedBinarySequenceRatherThanConcatenatingStreams() async throws {
+        let fixture = try LogCaptureFixture()
+        defer { fixture.remove() }
+        let capture = try fixture.capture()
+        let first = Data([0, 255, 10, 65])
+        let second = Data([195, 169, 0, 254])
+        let third = Data([13, 66, 128, 10])
+        let combinedPath = capture.directoryPath + "/combined.log"
+        try logWrite(first, descriptor: capture.standardOutputDescriptor)
+        // The next write follows an actual capture observation, rather than
+        // assuming scheduler order or a chronology between two ready pipes.
+        try await logWaitUntil { try Data(contentsOf: URL(fileURLWithPath: combinedPath)) == first }
+        try logWrite(second, descriptor: capture.standardErrorDescriptor)
+        try await logWaitUntil { try Data(contentsOf: URL(fileURLWithPath: combinedPath)) == first + second }
+        try logWrite(third, descriptor: capture.standardOutputDescriptor)
+        let result = await capture.finishAfterWorkerRetirement()
+        #expect(result.captureComplete)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: result.standardOutput.path)) == first + third)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: result.standardError.path)) == second)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: result.combined.path)) == first + second + third)
+        #expect(result.combined.sha256 == CanonicalJSONDigest.digest(first + second + third))
+        #expect(result.combined.observedBytes == 12 && result.combined.retainedBytes == 12)
+        #expect(result.combined.reachedEOF)
         try capture.revalidateForPublication(result)
     }
 
@@ -82,6 +113,10 @@ struct NativeLogCaptureTests {
         #expect(result.standardOutput.observedBytes == bytes.count)
         #expect(result.standardError.observedBytes == bytes.count)
         #expect(result.standardOutput.retainedBytes + result.standardError.retainedBytes <= 1_024)
+        #expect(result.combined.observedBytes == bytes.count * 2)
+        #expect(result.combined.retainedBytes == result.standardOutput.retainedBytes + result.standardError.retainedBytes)
+        #expect(result.combined.retainedBytes <= 1_024)
+        #expect(result.combined.reachedEOF)
         #expect(result.failures.contains { $0.operation == "rawOutputLimit" })
         #expect(failures.values.contains { $0.operation == "rawOutputLimit" })
         #expect(capture.supervisorFailure()?.operation == "nativeLogCapture.rawOutputLimit")
@@ -97,6 +132,9 @@ struct NativeLogCaptureTests {
         #expect(result.standardOutput.retainedBytes == 8)
         #expect(result.standardError.retainedBytes == 0)
         #expect(result.standardError.sha256 == CanonicalJSONDigest.digest(Data()))
+        #expect(result.combined.observedBytes == 8 && result.combined.retainedBytes == 8)
+        #expect(result.combined.sha256 == CanonicalJSONDigest.digest(Data("12345678".utf8)))
+        #expect(result.combined.reachedEOF)
     }
 
     @Test func diskFailureDoesNotStrandAChildBehindItsFullOutputPipe() async throws {
@@ -121,8 +159,39 @@ struct NativeLogCaptureTests {
         #expect(result.standardOutput.observedBytes == bytes.count)
         #expect(result.standardError.observedBytes == bytes.count)
         #expect(result.standardOutput.retainedBytes == 0 && result.standardError.retainedBytes == 0)
+        #expect(result.combined.observedBytes == bytes.count * 2 && result.combined.retainedBytes == 0)
+        #expect(result.combined.reachedEOF)
         #expect(result.failures.contains { $0.operation == "writeLog" && $0.code == ENOSPC })
         #expect(!failures.values.isEmpty)
+    }
+
+    @Test func combinedWriteFailureStillDrainsBothOriginalPipesAndReportsItsOwnFailure() async throws {
+        let fixture = try LogCaptureFixture()
+        defer { fixture.remove() }
+        let bytes = Data(repeating: 17, count: 262_144)
+        try fixture.write("input", bytes)
+        let failures = LogFailureObserver()
+        let writer = LogCombinedFailureWriter()
+        let capture = try NativeLogCapture(root: fixture.path + "/captures", runID: UUID().uuidString,
+                                           maximumBytes: NativeLogCapture.maximumRawBytes,
+                                           onFailure: { failures.add($0) }, writeChunk: { writer.write($0, $1) })
+        try writer.pinCombined(path: capture.directoryPath + "/combined.log")
+        let child = try fixture.child(capture, arguments: ["-c", "/bin/cat \"$1\"; /bin/cat \"$1\" >&2",
+                                                         "fixture", fixture.path + "/input"])
+        defer { fixture.stop(child) }
+        try await logWaitUntil { !child.isRunning && kill(child.processIdentifier, 0) < 0 && errno == ESRCH }
+        let result = await capture.finishAfterWorkerRetirement()
+        #expect(child.terminationReason == .exit && child.terminationStatus == 0)
+        #expect(!result.captureComplete)
+        #expect(result.standardOutput.reachedEOF && result.standardError.reachedEOF && result.combined.reachedEOF)
+        #expect(result.standardOutput.observedBytes == bytes.count && result.standardError.observedBytes == bytes.count)
+        #expect(result.standardOutput.retainedBytes + result.standardError.retainedBytes > 0)
+        #expect(result.combined.observedBytes == bytes.count * 2 && result.combined.retainedBytes == 0)
+        #expect(result.combined.sha256 == CanonicalJSONDigest.digest(Data()))
+        #expect(result.failures.contains { $0.operation == "writeLog" && $0.code == ENOSPC && $0.stream == .combined })
+        #expect(failures.values.contains { $0.stream == .combined })
+        #expect(capture.supervisorFailure()?.operation == "nativeLogCapture.writeLog")
+        #expect(throws: NativeLogCaptureFailure.self) { try capture.revalidateForPublication(result) }
     }
 
     @Test func cancelledFinisherStillWaitsForADelayedWriterAndRetainsItsBytes() async throws {
@@ -151,9 +220,12 @@ struct NativeLogCaptureTests {
         #expect(result.standardOutput.observedBytes == 10)
         #expect(result.standardOutput.sha256 == CanonicalJSONDigest.digest(Data("first last".utf8)))
         #expect(try String(contentsOfFile: result.standardOutput.path, encoding: .utf8) == "first last")
+        #expect(result.combined.observedBytes == 10 && result.combined.retainedBytes == 10 && result.combined.reachedEOF)
+        #expect(result.combined.sha256 == result.standardOutput.sha256)
+        #expect(try String(contentsOfFile: result.combined.path, encoding: .utf8) == "first last")
     }
 
-    @Test(arguments: ["directory", "file"])
+    @Test(arguments: ["directory", "file", "combined-file"])
     func pathSubstitutionIsDetectedEvenWhileOutputIsQuiet(_ mutation: String) async throws {
         let fixture = try LogCaptureFixture()
         defer { fixture.remove() }
@@ -162,7 +234,7 @@ struct NativeLogCaptureTests {
             #expect(rename(capture.directoryPath, capture.directoryPath + ".moved") == 0)
             #expect(mkdir(capture.directoryPath, 0o700) == 0)
         } else {
-            let path = capture.directoryPath + "/stdout.log"
+            let path = capture.directoryPath + (mutation == "combined-file" ? "/combined.log" : "/stdout.log")
             #expect(rename(path, path + ".moved") == 0)
             let replacement = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
             #expect(replacement >= 0)
@@ -194,7 +266,7 @@ struct NativeLogCaptureTests {
         let capture = try fixture.capture()
         let empty = NativeLogStreamResult(path: "", observedBytes: 0, retainedBytes: 0,
                                            sha256: CanonicalJSONDigest.digest(Data()), reachedEOF: true)
-        let premature = NativeLogCaptureResult(standardOutput: empty, standardError: empty,
+        let premature = NativeLogCaptureResult(standardOutput: empty, standardError: empty, combined: empty,
                                                maximumBytes: NativeLogCapture.maximumRawBytes,
                                                captureComplete: true, failures: [])
         #expect(throws: NativeLogCaptureFailure.self) { try capture.revalidateForPublication(premature) }
@@ -203,6 +275,7 @@ struct NativeLogCaptureTests {
         #expect(result.captureComplete)
         let substituted = NativeLogCaptureResult(standardOutput: result.standardOutput,
                                                   standardError: result.standardError,
+                                                  combined: result.combined,
                                                   maximumBytes: result.maximumBytes - 1,
                                                   captureComplete: true, failures: [])
         #expect(throws: NativeLogCaptureFailure.self) { try capture.revalidateForPublication(substituted) }
@@ -210,8 +283,8 @@ struct NativeLogCaptureTests {
         try capture.revalidateForPublication(result)
     }
 
-    @Test(arguments: ["write-and-restore", "rename-and-restore"])
-    func publicationRejectsRestoredMutationAndNeverClearsItsConsumedEvent(_ mutation: String) async throws {
+    @Test(arguments: [NativeLogStream.standardOutput, .combined], ["write-and-restore", "rename-and-restore", "replace-and-restore"])
+    func publicationRejectsRestoredMutationAndNeverClearsItsConsumedEvent(_ stream: NativeLogStream, _ mutation: String) async throws {
         let fixture = try LogCaptureFixture()
         defer { fixture.remove() }
         let capture = try fixture.capture()
@@ -220,7 +293,7 @@ struct NativeLogCaptureTests {
         let result = await capture.finishAfterWorkerRetirement()
         #expect(result.captureComplete)
         try capture.revalidateForPublication(result)
-        let path = result.standardOutput.path
+        let path = stream == .combined ? result.combined.path : result.standardOutput.path
         if mutation == "write-and-restore" {
             let descriptor = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
             guard descriptor >= 0 else { throw LogFixtureError.setup }
@@ -230,6 +303,14 @@ struct NativeLogCaptureTests {
             try logWrite(bytes, descriptor: descriptor)
         } else {
             #expect(rename(path, path + ".moved") == 0)
+            if mutation == "replace-and-restore" {
+                let replacement = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                guard replacement >= 0 else { throw LogFixtureError.setup }
+                do { try logWrite(bytes, descriptor: replacement) }
+                catch { close(replacement); throw error }
+                #expect(close(replacement) == 0)
+                try FileManager.default.removeItem(atPath: path)
+            }
             #expect(rename(path + ".moved", path) == 0)
         }
         #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == bytes)
@@ -318,5 +399,45 @@ private func logWrite(_ data: Data, descriptor: Int32) throws {
             guard count > 0 else { throw LogFixtureError.write }
             offset += count
         }
+    }
+}
+
+private final class LogCombinedFailureWriter: Sendable {
+    private let identity: Mutex<(device: dev_t, inode: ino_t)?> = Mutex(nil)
+
+    func pinCombined(path: String) throws {
+        var file = stat()
+        guard lstat(path, &file) == 0, file.st_mode & S_IFMT == S_IFREG else { throw LogFixtureError.setup }
+        identity.withLock { $0 = (file.st_dev, file.st_ino) }
+    }
+
+    func write(_ descriptor: Int32, _ data: Data) -> CaptureWriteObservation {
+        // Compare actual descriptor identity; no variadic F_GETPATH bridge or
+        // dependency on the order in which the source pipes become readable.
+        guard let expected = identity.withLock({ $0 }) else {
+            return CaptureWriteObservation(bytesWritten: 0, errorNumber: EINVAL)
+        }
+        var file = stat()
+        guard fstat(descriptor, &file) == 0 else { return CaptureWriteObservation(bytesWritten: 0, errorNumber: errno) }
+        if file.st_dev == expected.device && file.st_ino == expected.inode {
+            return CaptureWriteObservation(bytesWritten: 0, errorNumber: ENOSPC)
+        }
+        return logObservedWrite(descriptor, data)
+    }
+}
+
+private func logObservedWrite(_ descriptor: Int32, _ data: Data) -> CaptureWriteObservation {
+    return data.withUnsafeBytes { buffer in
+        var offset = 0
+        while offset < buffer.count {
+            let count = Darwin.write(descriptor, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return CaptureWriteObservation(bytesWritten: offset, errorNumber: errno)
+            }
+            if count == 0 { return CaptureWriteObservation(bytesWritten: offset, errorNumber: EIO) }
+            offset += count
+        }
+        return CaptureWriteObservation(bytesWritten: offset, errorNumber: nil)
     }
 }

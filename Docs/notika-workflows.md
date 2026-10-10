@@ -88,7 +88,19 @@ summary. Later result consumers must leave the sealed evidence unchanged.
 Passing unit results require actual, nonempty passing counts with no failed
 tests. A parameterized Swift Testing method can execute several cases.
 
-Separate stdout/stderr logs, actual native termination, executed counts,
+Each native phase retains stdout, stderr, and a combined raw log. The combined
+log preserves the order in which capture reads the two pipes; separate pipes
+cannot establish a total order of the child's writes. Capture budgets the
+original output once, up to 64 MiB, and the combined file mirrors its retained
+bytes. All three files require pinned custody, matching sizes and digests, EOF,
+and publication revalidation. Overflow or any log failure makes capture
+incomplete while the pipes continue draining through worker retirement.
+
+Historical retention readers can admit an older closed record with only the
+two original streams. They record combined evidence as unavailable. Current
+publication and result consumers require the combined file.
+
+Raw logs, actual native termination, executed counts,
 source/tool observations, cancellation, and publication errors appear in the
 session report. Native failure takes precedence over later evidence errors.
 Native success with missing, empty, changed, or unreadable evidence is
@@ -121,6 +133,8 @@ configured renderer tree and Swift's bounded copy/overlay operations. Preview
 serves that retained site on loopback while writer, graph, and cache ownership
 remain live. A failed renderer or preview never turns a successful docbuild into
 a successful documentation workflow; both outcomes remain in its report.
+Preview readiness follows whole-site verification, bounded by 250,000 entries,
+2 GiB, and 64 levels. Cancellation or helper retirement ends the readiness wait.
 
 Generic `agentbuild run` must not wrap these managed Notika routes: they already
 own their resources. Imported result paths, copied JSON receipts, source
@@ -128,9 +142,9 @@ observations, and environment markers do not confer live lease authority.
 
 # Validation record
 
-On 10 October 2026, the full Swift controller suite passed 487 tests in 49
-suites in 87.761 seconds in
-[batch 37](../Untracked/Validation/project-foundations-tests-37.log).
+On 10 October 2026, the full Swift controller suite passed 494 tests in 49
+suites in 126.604 seconds in
+[batch 43](../Untracked/Validation/project-foundations-tests-43.log).
 Actual Notika sessions also established the following results; their reports
 remain under Notika's `Artifacts/AgentSessions/`.
 
@@ -141,8 +155,10 @@ remain under Notika's `Artifacts/AgentSessions/`.
 | `30FA337E-860A-41FF-ADA6-A4E5B27A2435` | Generation: native exit 0, complete admitted generation report |
 | `F44D28C2-BCCA-4E64-88DD-A48F482B4DCC` | macOS launch: native build exit 0; user confirmed the Documents window; user-requested close completed with app and workflow exit 0 |
 
-The initial release installation passed with version `0.3.0` at
+The updated release installation passed with version `0.3.0` at
 `~/.local/opt/agentbuild/bin/agentbuild`; its command link and tool doctor passed.
+The installed regular executable has mode `0755` and matches the built release
+SHA-256 `946f73461a4cbb6aec5bdc611a270023c0bdf3af7faf04750e4325f7dd99afc7`.
 The Make compilation default now uses `hw.logicalcpu` (12 on this Mac), matching
 the user's all-core preference.
 
@@ -151,14 +167,11 @@ native exit 0, one executed/passing test, admitted results, and no source or
 toolchain drift. It retained the selected paper-guide spacing after notebook
 creation. SimLease deleted its private iPad Air simulator after completion.
 
-DocC archive validation failed with native exit 65: the generic macOS
-destination included x86_64, where the Float16 code did not compile. The command
-now selects arm64, matching its cache identity. Its focused batch 38 passed nine
-tests in one suite; the native rerun remains pending. Preflight retry 3 was cancelled with exit 143
-after an old Python reference fixture reported a startup readiness timeout.
-Compilation was concurrent; the timeout's cause remains unconfirmed.
+DocC's arm64 native build passed in session
+`A6AB7234-B282-4F90-B45E-3DB6117A9CFE`. Its retained rendering/preview pipeline
+and the final preflight remain in progress. The installed release includes
+combined raw capture, historical terminal admission, and cancellable preview
+readiness; these paths passed the full controller suite.
 
-Status remains `implemented-validation-pending`. Final preflight,
-the DocC rerun, final release installation after its fix, and Git
-publication remain pending. These recorded results do not imply validation of
-every catalog route.
+Status remains `implemented-validation-pending` until those two native workflows
+finish. These recorded results do not imply validation of every catalog route.

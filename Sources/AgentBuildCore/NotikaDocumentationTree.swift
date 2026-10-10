@@ -356,7 +356,8 @@ private func documentationNames(_ directory: Int32) throws -> [String] {
 private func documentationRead(_ descriptor: Int32, expected: stat, maximum: Int64, checkCancellation: Bool = true,
     consume: (Data) throws -> Void = { _ in }) throws -> (bytes: Int64, digest: String) {
     guard expected.st_size <= maximum, maximum >= 0 else { throw NotikaDocumentationDriverError.treeBoundExceeded }
-    var buffer = [UInt8](repeating: 0, count: 128 * 1_024)
+    let bufferSize = Int(min(Int64(128 * 1_024), max(1, expected.st_size)))
+    var buffer = [UInt8](repeating: 0, count: bufferSize)
     var total: Int64 = 0
     var hash = SHA256()
     while true {
@@ -366,6 +367,7 @@ private func documentationRead(_ descriptor: Int32, expected: stat, maximum: Int
         guard count >= 0 else { throw documentationIO("read DocC file") }
         if count == 0 { break }
         guard Int64(count) <= maximum - total else { throw NotikaDocumentationDriverError.treeBoundExceeded }
+        guard Int64(count) <= expected.st_size - total else { throw NotikaDocumentationDriverError.artifactChanged }
         let data = Data(buffer.prefix(count))
         hash.update(data: data); try consume(data); total += Int64(count)
     }
@@ -383,4 +385,14 @@ internal func documentationWrite(_ data: Data, descriptor: Int32) throws {
         }
     }
 }
-internal func documentationHex(_ value: SHA256.Digest) -> String { value.map { String(format: "%02x", $0) }.joined() }
+internal func documentationHex(_ value: SHA256.Digest) -> String {
+    let digits = Array("0123456789abcdef".utf8)
+    var bytes = [UInt8](repeating: 0, count: 64)
+    var offset = 0
+    for byte in value {
+        bytes[offset] = digits[Int(byte >> 4)]
+        bytes[offset + 1] = digits[Int(byte & 0x0f)]
+        offset += 2
+    }
+    return String(decoding: bytes, as: UTF8.self)
+}

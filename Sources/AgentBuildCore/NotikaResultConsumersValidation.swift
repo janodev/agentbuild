@@ -11,6 +11,16 @@ extension NotikaResultConsumerEvidence {
         sessionPath: String, expectedResultIdentity: NativeWorkingDirectoryIdentity? = nil,
         allowFixtureAdmission: Bool = false
     ) throws -> Bool {
+        try validateCanonicalValue(value, request: request, resultReceiptSHA256: resultReceiptSHA256,
+            sessionPath: sessionPath, expectedResultIdentity: expectedResultIdentity,
+            allowFixtureAdmission: allowFixtureAdmission, captureAdmissionPolicy: .current)
+    }
+
+    internal static func validateCanonicalValue(
+        _ value: CanonicalJSONValue, request: NotikaActionRequest, resultReceiptSHA256: String,
+        sessionPath: String, expectedResultIdentity: NativeWorkingDirectoryIdentity? = nil,
+        allowFixtureAdmission: Bool = false, captureAdmissionPolicy: NativeCaptureAdmissionPolicy
+    ) throws -> Bool {
         let document = try StrictJSONDocument(data: CanonicalJSONDigest.encode(value))
         let root = try document.root.requireObject().project(requiredKeys: [
             "schemaVersion", "kind", "route", "resultReceiptSHA256", "successfulConsumption",
@@ -109,33 +119,9 @@ extension NotikaResultConsumerEvidence {
                     && consumerReadArray(worker, "failures").isEmpty && worker.value(forKey: "stopReason") == nil
                 if !diagnostic { capturesPassed = capturesPassed && workerPassed }
             } else if !diagnostic { capturesPassed = false }
-            let raw = try capture.requiredValue(forKey: "rawCapture").requireObject().project(requiredKeys: [
-                "standardOutput", "standardError", "maximumBytes", "captureComplete", "failures",
-            ])
-            let maximum = try consumerReadInteger(raw, "maximumBytes")
-            guard (0...(64 * 1_024 * 1_024)).contains(maximum) else { throw consumerInvalid("consumer raw limit") }
-            var total: Int64 = 0
-            var complete = try consumerReadBool(raw, "captureComplete") && consumerReadArray(raw, "failures").isEmpty
-            for (key, name) in [("standardOutput", "stdout.log"), ("standardError", "stderr.log")] {
-                let stream = try raw.requiredValue(forKey: key).requireObject().project(requiredKeys: [
-                    "path", "observedBytes", "retainedBytes", "sha256", "reachedEOF",
-                ])
-                let path = try consumerReadString(stream, "path")
-                let relative = String(path.dropFirst((sessionPath + "/").utf8.count))
-                let components = relative.split(separator: "/", omittingEmptySubsequences: false)
-                guard path.hasPrefix(sessionPath + "/"), components.count == 2,
-                      UUID(uuidString: String(components[0])) != nil, components[1] == Substring(name),
-                      consumerSHA(try consumerReadString(stream, "sha256")) else { throw consumerInvalid("consumer raw path") }
-                let retained = try consumerReadInteger(stream, "retainedBytes")
-                let observed = try consumerReadInteger(stream, "observedBytes")
-                let addition = total.addingReportingOverflow(retained)
-                guard retained >= 0, observed >= retained, !addition.overflow, addition.partialValue <= maximum else {
-                    throw consumerInvalid("consumer raw accounting")
-                }
-                total = addition.partialValue
-                complete = try complete && observed == retained && consumerReadBool(stream, "reachedEOF")
-            }
-            if !diagnostic { capturesPassed = capturesPassed && nativePassed && complete }
+            let raw = try admitNativeLogCaptureRecord(capture.requiredValue(forKey: "rawCapture"),
+                sessionPath: sessionPath, policy: captureAdmissionPolicy)
+            if !diagnostic { capturesPassed = capturesPassed && nativePassed && raw.captureComplete }
         }
         let reports = try consumerReadArray(root, "reports")
         guard reports.count <= 4 else { throw consumerInvalid("consumer report count") }

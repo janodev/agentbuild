@@ -5,6 +5,26 @@ import Testing
 
 @Suite("Notika documentation tree custody")
 struct NotikaDocumentationTreeTests {
+    @Test(arguments: [0, 1, 37, 131_071, 131_072, 131_073, 262_161])
+    func adaptiveStreamingAndCopiesMatchIndependentBinaryOracle(_ count: Int) throws {
+        let fixture = try DocumentationTreeFixture()
+        defer { fixture.cleanUp() }
+        try fixture.makeDirectory("source")
+        try fixture.makeDirectory("snapshot")
+        let bytes = Data((0..<count).map { UInt8($0 % 251) })
+        try fixture.write("source/blob.bin", bytes: bytes)
+        let source = try NotikaDocumentationTree(path: fixture.child("source"))
+        let snapshot = try NotikaDocumentationTree(path: fixture.child("snapshot"), privateRoot: true)
+        let expected = NotikaDocumentationTreeCommitment(algorithm: "notika.docc-owned-tree.sha256.v1",
+            sha256: try #require(documentationStreamingOracle[count]), entries: 1, bytes: Int64(count),
+            maximumEntries: 250_000, maximumBytes: 2_147_483_648, maximumDepth: 64)
+
+        #expect(try source.commitment() == expected)
+        #expect(try source.copy(into: snapshot, expected: expected) == expected)
+        #expect(try snapshot.commitment() == expected)
+        #expect(try fixture.read("snapshot/blob.bin") == bytes)
+    }
+
     @Test func canonicalTreeCommitmentMatchesIndependentPythonFixture() throws {
         let fixture = try DocumentationTreeFixture()
         defer { fixture.cleanUp() }
@@ -176,6 +196,30 @@ struct NotikaDocumentationTreeTests {
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.child("snapshot")).isEmpty)
     }
+
+    @Test func growingSmallFileInvalidatesRetainedFileAndPreviouslyAdmittedCopy() throws {
+        let fixture = try DocumentationTreeFixture()
+        defer { fixture.cleanUp() }
+        try fixture.makeDirectory("source")
+        try fixture.makeDirectory("snapshot")
+        try fixture.write("source/blob.bin", bytes: Data([1]))
+        let source = try NotikaDocumentationTree(path: fixture.child("source"))
+        let snapshot = try NotikaDocumentationTree(path: fixture.child("snapshot"), privateRoot: true)
+        let admitted = try source.commitment()
+        let opened = try source.openFile(components: ["blob.bin"])
+        let before = try fixture.status("source/blob.bin")
+        let writer = try FileHandle(forWritingTo: URL(fileURLWithPath: fixture.child("source/blob.bin")))
+        defer { try? writer.close() }
+        try writer.seekToEnd()
+        try writer.write(contentsOf: Data(repeating: 2, count: 131_073))
+        let after = try fixture.status("source/blob.bin")
+        #expect(after.st_dev == before.st_dev && after.st_ino == before.st_ino)
+        #expect(after.st_size == 131_074)
+
+        #expect(throws: NotikaDocumentationDriverError.artifactChanged) { try opened.revalidate() }
+        #expect(throws: NotikaDocumentationDriverError.artifactChanged) { try source.copy(into: snapshot, expected: admitted) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.child("snapshot")).isEmpty)
+    }
 }
 
 enum DocumentationUnsafeTreeEntry: CaseIterable, Sendable {
@@ -191,6 +235,18 @@ private let smallDocumentationTreeCommitment = NotikaDocumentationTreeCommitment
     sha256: "90c3ecb4d603771a78d84f95c0375c250fcca9cce22c4e472289c26ccf58f2b5",
     entries: 4, bytes: 24, maximumEntries: 250_000, maximumBytes: 2_147_483_648, maximumDepth: 64
 )
+
+// Independent Python hashlib + json.dumps oracle for one blob.bin record.
+// Byte i is i % 251; JSON uses sorted keys and compact separators with no LF.
+private let documentationStreamingOracle: [Int: String] = [
+    0: "048b75739760c20a03d66bc6e3a577771c646914182804b7f47e72067c892834",
+    1: "74f6bf7f76e5fc251df532957d35ef40a3a3e1548fee338b1c1fdc020d7e6279",
+    37: "939874e730af61bce47041b76e837082d88c6defcd33b22cf464427b562fb947",
+    131_071: "7b12338b04604f4ba1cf6d57f064c29f248c4c54c23aaddbf6acc610c40901df",
+    131_072: "a3eb56e22fa40c096e89c220a7a94937639cfe0d2a9f22fd4177c37e40be4e4a",
+    131_073: "6705c09db42b99255a1705bd03ee34612109c65bdc9a4306317f77f0ed9bdfac",
+    262_161: "bc631e5fd4e79dfd8a2ce17f2a0fc4f3d9d2aeede388545ae4af6e302af223f9",
+]
 
 private enum DocumentationTreeFixtureError: Error {
     case systemCall(String, Int32)

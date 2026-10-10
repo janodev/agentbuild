@@ -559,7 +559,8 @@ private final class SessionRetentionAdmission: Sendable {
         nativeUnknown = inactiveProgress || object.value(forKey: "resourceID") == .string("notika.abandoned-development-session")
         if object.value(forKey: "namespace") == .string(NotikaBuildSessionReport.namespace) {
             do {
-                let report = try NotikaBuildSessionReport(data: manifest.bytes, expectedRepository: root.repository.path, expectedSessionID: name)
+                let report = try NotikaBuildSessionReport(data: manifest.bytes, expectedRepository: root.repository.path,
+                    expectedSessionID: name, captureAdmissionPolicy: inactiveProgress ? .current : .historicalRetention)
                 guard report.lifecycle == (inactiveProgress ? "inProgress" : "terminal"),
                       evidenceName == (inactiveProgress ? "in-progress.json" : "manifest.json"),
                       try sessionRetentionUInt(object, "ownerUID") == UInt64(geteuid()) else {
@@ -593,16 +594,20 @@ private final class SessionRetentionAdmission: Sendable {
                 let lifecycle: String
                 if object.value(forKey: "namespace") == .string(NotikaGenerationSessionReport.namespace) {
                     lifecycle = try NotikaGenerationSessionReport(data: manifest.bytes,
-                        expectedRepository: root.repository.path, expectedSessionID: name).lifecycle
+                        expectedRepository: root.repository.path, expectedSessionID: name,
+                        captureAdmissionPolicy: inactiveProgress ? .current : .historicalRetention).lifecycle
                 } else if object.value(forKey: "namespace") == .string(NotikaRustTestSessionReport.namespace) {
                     lifecycle = try NotikaRustTestSessionReport(data: manifest.bytes,
-                        expectedRepository: root.repository.path, expectedSessionID: name).lifecycle
+                        expectedRepository: root.repository.path, expectedSessionID: name,
+                        captureAdmissionPolicy: inactiveProgress ? .current : .historicalRetention).lifecycle
                 } else if object.value(forKey: "namespace") == .string(NotikaPreflightSessionReport.namespace) {
                     lifecycle = try NotikaPreflightSessionReport(data: manifest.bytes,
-                        expectedRepository: root.repository.path, expectedSessionID: name).lifecycle
+                        expectedRepository: root.repository.path, expectedSessionID: name,
+                        captureAdmissionPolicy: inactiveProgress ? .current : .historicalRetention).lifecycle
                 } else {
                     lifecycle = try NotikaDocumentationSessionReport(data: manifest.bytes,
-                        expectedRepository: root.repository.path, expectedSessionID: name).lifecycle
+                        expectedRepository: root.repository.path, expectedSessionID: name,
+                        captureAdmissionPolicy: inactiveProgress ? .current : .historicalRetention).lifecycle
                 }
                 guard lifecycle == (inactiveProgress ? "inProgress" : "terminal"),
                       evidenceName == (inactiveProgress ? "in-progress.json" : "manifest.json") else {

@@ -37,7 +37,8 @@ struct NotikaPerformanceEvidenceTests {
             resultReceiptSHA256: summary.resultBundle.receiptSHA256, outerLeaseEvidence: nil, sourceHead: fixture.head,
             expectedResultIdentity: summary.probe?.workingDirectoryIdentity, allowFixtureAdmission: true)
         #expect(admitted)
-        for mutation in ["foreignDirectory", "unknownObservation", "foreignWorker", "missingProcess", "unknownRaw", "outsideRaw", "truncatedRaw"] {
+        for mutation in ["foreignDirectory", "unknownObservation", "foreignWorker", "missingProcess", "unknownRaw", "outsideRaw", "truncatedRaw",
+                         "missingCombined", "foreignCombined", "combinedCount", "combinedEOF"] {
             var snapshotObject = try performanceDocument(CanonicalJSONDigest.encode(snapshot)).object()
             var export = try snapshotObject["exportCapture"]!.object()
             if mutation == "foreignDirectory" {
@@ -55,6 +56,14 @@ struct NotikaPerformanceEvidenceTests {
             } else {
                 var raw = try export["rawCapture"]!.object()
                 if mutation == "unknownRaw" { raw["extra"] = .null }
+                else if mutation == "missingCombined" { raw.removeValue(forKey: "combined") }
+                else if ["foreignCombined", "combinedCount", "combinedEOF"].contains(mutation) {
+                    var stream = try raw["combined"]!.object()
+                    if mutation == "foreignCombined" { stream["path"] = .string(fixture.session.path + "/" + UUID().uuidString + "/combined.log") }
+                    else if mutation == "combinedCount" { stream["observedBytes"] = .integer(1) }
+                    else { stream["reachedEOF"] = .bool(false) }
+                    raw["combined"] = .object(stream)
+                }
                 else {
                     var stream = try raw["standardOutput"]!.object()
                     if mutation == "outsideRaw" { stream["path"] = .string("/private/tmp/foreign/stdout.log") }
@@ -175,7 +184,7 @@ private struct PerformanceEvidenceFixture: Sendable {
         let file = result.appendingPathComponent("data"); try Data([1, 2, 3]).write(to: file); #expect(chmod(file.path, 0o600) == 0)
         let worker = DarwinWorkloadResult(processIdentifier: 42, termination: .init(kind: .exit, value: 0), stopReason: nil, retirement: .reaped, failures: [])
         let stream = NativeLogStreamResult(path: "/fixture/unused", observedBytes: 0, retainedBytes: 0, sha256: CanonicalJSONDigest.digest(Data()), reachedEOF: true)
-        let raw = NativeLogCaptureResult(standardOutput: stream, standardError: stream, maximumBytes: 0, captureComplete: true, failures: [])
+        let raw = NativeLogCaptureResult(standardOutput: stream, standardError: stream, combined: stream, maximumBytes: 0, captureComplete: true, failures: [])
         let bundle = try reservation.admit(nativeObservation: NotikaNativeObservation(worker: worker), rawCapture: raw)
         let count = canvas ? 1 : 2
         let encoded = "{\"result\":\"Passed\",\"passedTests\":\(count),\"failedTests\":0,\"skippedTests\":0,\"totalTestCount\":\(count)}"

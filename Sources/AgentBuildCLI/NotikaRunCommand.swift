@@ -82,6 +82,7 @@ struct NotikaRunCommand: AsyncParsableCommand {
             if let raw = completed.rawCapture {
                 print("Application stdout: \(raw.standardOutput.path)")
                 print("Application stderr: \(raw.standardError.path)")
+                print("Application combined: \(raw.combined.path)")
             }
         }
         for failure in completed.failures + completed.build.orchestrationFailures + completed.build.publicationFailures {

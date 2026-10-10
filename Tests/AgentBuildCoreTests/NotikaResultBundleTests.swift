@@ -6,6 +6,72 @@ import Testing
 
 @Suite("Notika result custody and observed test counts")
 struct NotikaResultBundleTests {
+    @Test(arguments: ["missingCombined", "unknownCombinedField", "combinedWrongLeaf", "foreignCombinedCapture",
+                      "shortCombined", "combinedMissingEOF", "invalidCombinedDigest", "inputCap", "overflowObserved", "foreignErrorCapture"])
+    func currentCaptureAdmissionRejectsMissingOrMisboundCombinedEvidence(_ mutation: String) throws {
+        let session = "/private/tmp/record/Artifacts/AgentSessions/" + UUID().uuidString
+        let directory = UUID().uuidString
+        func stream(_ leaf: String, bytes: Data) -> [String: CanonicalJSONValue] {
+            ["path": .string(session + "/" + directory + "/" + leaf), "observedBytes": .integer(Int64(bytes.count)),
+             "retainedBytes": .integer(Int64(bytes.count)), "sha256": .string(CanonicalJSONDigest.digest(bytes)), "reachedEOF": .bool(true)]
+        }
+        // Capture-observed interleaving differs from stdout followed by stderr.
+        // Each digest commits its own bytes rather than a concatenated hash.
+        let output = stream("stdout.log", bytes: Data("ac".utf8)), error = stream("stderr.log", bytes: Data("b".utf8))
+        var combined = stream("combined.log", bytes: Data("abc".utf8))
+        var fields: [String: CanonicalJSONValue] = ["standardOutput": .object(output), "standardError": .object(error),
+            "combined": .object(combined), "maximumBytes": .integer(3), "captureComplete": .bool(true), "failures": .array([])]
+        let original = try StrictJSONDocument(data: CanonicalJSONDigest.encode(.object(fields))).root
+        #expect(try admitNativeLogCaptureRecord(original, sessionPath: session).combined?.observedBytes == 3)
+        switch mutation {
+        case "missingCombined": fields.removeValue(forKey: "combined")
+        case "unknownCombinedField": combined["extra"] = .null
+        case "combinedWrongLeaf": combined["path"] = .string(session + "/" + directory + "/stdout.log")
+        case "foreignCombinedCapture": combined["path"] = .string(session + "/" + UUID().uuidString + "/combined.log")
+        case "shortCombined": combined["retainedBytes"] = .integer(2)
+        case "combinedMissingEOF": combined["reachedEOF"] = .bool(false)
+        case "invalidCombinedDigest": combined["sha256"] = .string("invalid")
+        case "inputCap": fields["maximumBytes"] = .integer(2)
+        case "overflowObserved":
+            var changed = output; changed["observedBytes"] = .integer(Int64.max)
+            fields["standardOutput"] = .object(changed); fields["captureComplete"] = .bool(false)
+        case "foreignErrorCapture":
+            var changed = error; changed["path"] = .string(session + "/" + UUID().uuidString + "/stderr.log")
+            fields["standardError"] = .object(changed)
+        default: Issue.record("Unknown combined admission mutation")
+        }
+        if mutation != "missingCombined" { fields["combined"] = .object(combined) }
+        let changed = try StrictJSONDocument(data: CanonicalJSONDigest.encode(.object(fields))).root
+        #expect(throws: (any Error).self) { try admitNativeLogCaptureRecord(changed, sessionPath: session) }
+        if mutation == "missingCombined" {
+            let historical = try admitNativeLogCaptureRecord(changed, sessionPath: session, policy: .historicalRetention)
+            #expect(historical.combined == nil)
+            #expect(historical.captureComplete)
+            #expect(historical.standardOutput.sha256 == CanonicalJSONDigest.digest(Data("ac".utf8)))
+        } else {
+            #expect(throws: (any Error).self) {
+                try admitNativeLogCaptureRecord(changed, sessionPath: session, policy: .historicalRetention)
+            }
+        }
+    }
+
+    @Test func incompleteCaptureKeepsCombinedWriteFailureWithoutInventingCompleteBytes() throws {
+        let session = "/private/tmp/record/Artifacts/AgentSessions/" + UUID().uuidString, directory = UUID().uuidString
+        func stream(_ leaf: String, retained: Int64) -> CanonicalJSONValue {
+            .object(["path": .string(session + "/" + directory + "/" + leaf), "observedBytes": .integer(2),
+                     "retainedBytes": .integer(retained), "sha256": .string(CanonicalJSONDigest.digest(Data())), "reachedEOF": .bool(true)])
+        }
+        let combined = CanonicalJSONValue.object(["path": .string(session + "/" + directory + "/combined.log"),
+            "observedBytes": .integer(4), "retainedBytes": .integer(1), "sha256": .string(CanonicalJSONDigest.digest(Data())), "reachedEOF": .bool(true)])
+        let value = CanonicalJSONValue.object(["standardOutput": stream("stdout.log", retained: 2), "standardError": stream("stderr.log", retained: 2),
+            "combined": combined, "maximumBytes": .integer(4), "captureComplete": .bool(false),
+            "failures": .array([.object(["operation": .string("write"), "stream": .string("combined"), "code": .integer(Int64(ENOSPC))])])])
+        let record = try admitNativeLogCaptureRecord(StrictJSONDocument(data: CanonicalJSONDigest.encode(value)).root, sessionPath: session)
+        #expect(!record.captureComplete)
+        #expect(record.combined?.retainedBytes == 1)
+        #expect(record.standardOutput.retainedBytes + record.standardError.retainedBytes == 4)
+    }
+
     @Test(arguments: NotikaMakeRoute.allCases.filter(\.expectsResultBundle))
     func everyResultProducingRouteBindsItsExactRuntimeAndDestination(route: NotikaMakeRoute) throws {
         let file = route.acceptsTestFile ? "ActualTests" : route.acceptsCoverageFile ? "Sources/Actual.swift" : ""
@@ -538,7 +604,7 @@ private struct ResultFixture: Sendable {
                                           stopReason: nil, retirement: .reaped, failures: [])
         let stream = NativeLogStreamResult(path: "/fixture/unused", observedBytes: 0, retainedBytes: 0,
                                             sha256: CanonicalJSONDigest.digest(Data()), reachedEOF: complete)
-        let raw = NativeLogCaptureResult(standardOutput: stream, standardError: stream, maximumBytes: 0,
+        let raw = NativeLogCaptureResult(standardOutput: stream, standardError: stream, combined: stream, maximumBytes: 0,
                                           captureComplete: complete, failures: [])
         return try reservation.admit(nativeObservation: NotikaNativeObservation(worker: worker), rawCapture: raw)
     }
