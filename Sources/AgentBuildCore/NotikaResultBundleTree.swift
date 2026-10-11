@@ -107,14 +107,51 @@ public struct NotikaResultTreeRecord: Codable, Equatable, Sendable {
 /// A deliberately bounded ordinary-test bundle. Refusing an oversized tree is
 /// an evidence failure, never permission to publish unchecked content.
 final class NotikaResultBundleTree {
-    static let maximumEntries = 1_024
+    static let maximumEntries = 4_096
     static let maximumBytes: Int64 = 1_024 * 1_024 * 1_024
+    // Index preparation retains the original tree while sealing the final one.
+    // This is capacity, not a reservation against unrelated descriptor users.
+    static let minimumDescriptorLimit: rlim_t = rlim_t(2 * maximumEntries + 256)
+    private static let descriptorLimitLock = NSLock()
     let root: Int32
     let watch: ResultMutationWatch
     let commitment: String
     let byteCount: Int64
     private let nodes: [RetainedResultNode]
     private let allowsRootSQLitePreparation: Bool
+
+    static func descriptorLimitPlan(_ current: rlimit) throws -> rlimit {
+        guard current.rlim_cur <= current.rlim_max else {
+            throw NotikaResultBundleFailure(operation: "invalid result descriptor limit", code: EINVAL)
+        }
+        guard current.rlim_max >= minimumDescriptorLimit else {
+            throw NotikaResultBundleFailure(operation: "result descriptor budget unavailable", code: EMFILE,
+                                            detail: "requires \(minimumDescriptorLimit); hard limit \(current.rlim_max)")
+        }
+        return rlimit(rlim_cur: max(current.rlim_cur, minimumDescriptorLimit), rlim_max: current.rlim_max)
+    }
+
+    static func ensureDescriptorBudget() throws {
+        descriptorLimitLock.lock()
+        defer { descriptorLimitLock.unlock() }
+        var current = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &current) == 0 else {
+            throw resultFailure("read result descriptor limit")
+        }
+        var requested = try descriptorLimitPlan(current)
+        if requested.rlim_cur > current.rlim_cur {
+            guard setrlimit(RLIMIT_NOFILE, &requested) == 0 else {
+                throw resultFailure("raise result descriptor limit")
+            }
+        }
+        var observed = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &observed) == 0 else {
+            throw resultFailure("verify result descriptor limit")
+        }
+        guard observed.rlim_cur >= minimumDescriptorLimit, observed.rlim_max == current.rlim_max else {
+            throw NotikaResultBundleFailure(operation: "result descriptor limit changed", code: ESTALE)
+        }
+    }
 
     var records: [NotikaResultTreeRecord] {
         nodes.map { .init(path: $0.path, type: $0.identity.directory ? "directory" : "file",
@@ -127,7 +164,7 @@ final class NotikaResultBundleTree {
          maximumEntries: Int = NotikaResultBundleTree.maximumEntries, privatePermissions: Bool = false,
          requiredFilePermissions: UInt16? = nil, requiredRootFile: String? = nil,
          allowsRootSQLitePreparation: Bool = false) throws {
-        guard maximumBytes >= 0, maximumEntries > 0,
+        guard maximumBytes >= 0, maximumEntries > 0, maximumEntries <= Self.maximumEntries,
               requiredFilePermissions == nil || [UInt16(0o400), UInt16(0o600)].contains(requiredFilePermissions!) else {
             throw NotikaResultBundleFailure(operation: "invalid result tree policy", code: EINVAL)
         }

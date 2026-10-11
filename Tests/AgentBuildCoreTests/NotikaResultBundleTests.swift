@@ -6,6 +6,97 @@ import Testing
 
 @Suite("Notika result custody and observed test counts")
 struct NotikaResultBundleTests {
+    @Suite("Large retained result trees", .serialized)
+    struct DescriptorCapacity {
+        @Test func descriptorBudgetPreservesHardLimitsAndNeverLowersCapacity() throws {
+            let required = NotikaResultBundleTree.minimumDescriptorLimit
+            let exact = try NotikaResultBundleTree.descriptorLimitPlan(rlimit(rlim_cur: required, rlim_max: required))
+            #expect(exact.rlim_cur == required)
+            #expect(exact.rlim_max == required)
+            let raised = try NotikaResultBundleTree.descriptorLimitPlan(rlimit(rlim_cur: 4_096, rlim_max: required))
+            #expect(raised.rlim_cur == required)
+            #expect(raised.rlim_max == required)
+            // Darwin's RLIM_INFINITY expression macro is not imported into Swift.
+            let unlimited = rlim_t(Int64.max)
+            let high = try NotikaResultBundleTree.descriptorLimitPlan(rlimit(rlim_cur: 16_384, rlim_max: unlimited))
+            #expect(high.rlim_cur == 16_384)
+            #expect(high.rlim_max == unlimited)
+            let unlimitedHard = try NotikaResultBundleTree.descriptorLimitPlan(rlimit(rlim_cur: 4_096, rlim_max: unlimited))
+            #expect(unlimitedHard.rlim_cur == required)
+            #expect(unlimitedHard.rlim_max == unlimited)
+            #expect(throws: NotikaResultBundleFailure(operation: "result descriptor budget unavailable", code: EMFILE,
+                                                    detail: "requires \(required); hard limit 4096")) {
+                try NotikaResultBundleTree.descriptorLimitPlan(rlimit(rlim_cur: 4_096, rlim_max: 4_096))
+            }
+            #expect(throws: NotikaResultBundleFailure(operation: "invalid result descriptor limit", code: EINVAL)) {
+                try NotikaResultBundleTree.descriptorLimitPlan(rlimit(rlim_cur: 9_000, rlim_max: 4_096))
+            }
+        }
+
+        @Test func largeColdIndexKeepsCompleteCustodyAndStickyPayloadMutation() async throws {
+            let fixture = try ResultFixture(route: .testUnitFocused, unitSelectors: ["ParameterizedTests/cases(_:)"])
+            defer { fixture.remove() }
+            let reservation = try fixture.reserve()
+            let native = try await fixture.captureShell("exit 0", workingDirectory: fixture.repository.path,
+                                                         artifactName: "unused", artifactRoot: fixture.session.path)
+            try fixture.createResult()
+            let leaf = Data("retained payload".utf8)
+            for index in 0..<2_946 {
+                let path = fixture.result.appendingPathComponent("Data/payload-\(index)")
+                try leaf.write(to: path)
+                #expect(chmod(path.path, 0o600) == 0)
+            }
+            let bundle = try await reservation.admitAfterRetirementForTrustedFixture(native,
+                environment: ["PATH": "/usr/bin:/bin"]) { requested, directory in
+                try await fixture.captureShell(#"printf sqlite > database.sqlite3; chmod 600 database.sqlite3; printf '%s' "$1""#,
+                    arguments: [String(decoding: summary(passed: 118, failed: 0, skipped: 0, total: 118), as: UTF8.self)],
+                    workingDirectory: requested.workingDirectory, environment: requested.environment,
+                    workingDirectoryDescriptor: directory, artifactName: "unused", artifactRoot: fixture.session.path)
+            }
+            #expect(bundle.custody.contentBytes == Int64(6 + 2_946 * leaf.count + 6))
+            let evidence = await bundle.observeSummaryForTrustedFixture(environment: ["PATH": "/usr/bin:/bin"]) { _, _ in
+                Issue.record("The prepared summary must be reused")
+                throw NotikaResultBundleFailure(operation: "unexpected second summary")
+            }
+            #expect(evidence.provesPassingRun)
+            #expect(evidence.tests?.executed == 118)
+            try evidence.revalidateForPublication()
+            var limits = rlimit()
+            #expect(getrlimit(RLIMIT_NOFILE, &limits) == 0)
+            #expect(limits.rlim_cur >= NotikaResultBundleTree.minimumDescriptorLimit)
+            let changed = fixture.result.appendingPathComponent("Data/payload-2945")
+            try Data("changed".utf8).write(to: changed)
+            try leaf.write(to: changed)
+            #expect(throws: NotikaResultBundleFailure.self) { try evidence.revalidateForPublication() }
+            #expect(throws: NotikaResultBundleFailure.self) { try evidence.revalidateForPublication() }
+        }
+
+        @Test(arguments: [false, true])
+        func resultEntryBoundIncludesRootAndRejectsOverflow(overflow: Bool) throws {
+            let fixture = try ResultFixture()
+            defer { fixture.remove() }
+            let reservation = try fixture.reserve()
+            try fixture.createResult()
+            // Root, Data and its existing evidence leaf are already three nodes.
+            let extraCount = NotikaResultBundleTree.maximumEntries - 3 + (overflow ? 1 : 0)
+            for index in 0..<extraCount {
+                let path = fixture.result.appendingPathComponent("Data/entry-\(index)")
+                try Data([1]).write(to: path)
+                #expect(chmod(path.path, 0o600) == 0)
+            }
+            if overflow {
+                #expect(throws: NotikaResultBundleFailure(operation: "result tree entry limit", code: EFBIG)) {
+                    try fixture.admit(reservation)
+                }
+                #expect(!FileManager.default.fileExists(atPath: fixture.session.appendingPathComponent("result-custody.json").path))
+            } else {
+                let retained = try fixture.admit(reservation)
+                #expect(retained.custody.contentBytes == Int64(6 + extraCount))
+                try retained.revalidateForPublication()
+            }
+        }
+    }
+
     @Test(arguments: ["missingCombined", "unknownCombinedField", "combinedWrongLeaf", "foreignCombinedCapture",
                       "shortCombined", "combinedMissingEOF", "invalidCombinedDigest", "inputCap", "overflowObserved", "foreignErrorCapture"])
     func currentCaptureAdmissionRejectsMissingOrMisboundCombinedEvidence(_ mutation: String) throws {

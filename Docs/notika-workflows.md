@@ -85,6 +85,15 @@ SQLite indexes at the result root. A supervised preparation phase permits only
 those fixed index additions while watching the original payload. After it
 finishes, the driver seals the complete result tree and reuses that captured
 summary. Later result consumers must leave the sealed evidence unchanged.
+Ordinary result trees admit at most 4,096 nodes, 1 GiB and depth 64. Every node
+still retains its descriptor, identity, content hash and sticky mutation watch.
+Before preparation or direct admission, the controller ensures a process soft
+file-descriptor limit of at least 8,448: two complete bounded trees plus 256
+descriptors for other controller work. It raises only the soft limit, preserves
+the hard limit and never lowers or restores a higher limit. Insufficient hard
+capacity or a failed raise refuses evidence admission; it cannot invent a native
+failure or a pass. This allowance is not a descriptor reservation, so unrelated
+descriptor pressure can still fail closed during ordinary file admission.
 Passing unit results require actual, nonempty passing counts with no failed
 tests. A parameterized Swift Testing method can execute several cases.
 

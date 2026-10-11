@@ -249,6 +249,7 @@ public final class NotikaResultBundle: @unchecked Sendable {
         try beginPreparation(nativeObservation: captured.observation, rawCapture: captured.rawCapture)
         var capturedProbe: CapturedNativePhase?
         do {
+            try NotikaResultBundleTree.ensureDescriptorBudget()
             let original = try NotikaResultBundleTree(parent: sessionDescriptor, name: "result.xcresult",
                                                       allowsRootSQLitePreparation: true)
             let command = try resultSummaryCommand(path: path, environment: environment)
@@ -312,6 +313,7 @@ public final class NotikaResultBundle: @unchecked Sendable {
         try preparedSummary?.revalidateForPublication()
         try preparationTree?.validateSQLitePreparation()
         try validateSessionLocked()
+        try NotikaResultBundleTree.ensureDescriptorBudget()
         let tree = try NotikaResultBundleTree(parent: sessionDescriptor, name: "result.xcresult")
         try preparationTree?.validateSQLitePreparation()
         let rootIdentity = try resultDescriptorIdentity(tree.root)
