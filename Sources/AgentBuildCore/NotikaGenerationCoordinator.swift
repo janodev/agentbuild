@@ -80,8 +80,8 @@ public struct NotikaGeneratedGraphEntry: Sendable {
     }
 }
 
-/// Generation owns the exclusive graph before preparation and acquires account
-/// compilation admission last, only for Tuist. No freshness receipt is inferred.
+/// Generation owns the exclusive graph throughout preparation and Tuist execution.
+/// It does not acquire host compilation admission. No freshness receipt is inferred.
 /// Both injected operations must await complete child retirement before return.
 public struct NotikaGenerationCoordinator: Sendable {
     public typealias CommandOperation = @Sendable (DarwinWorkloadCommand, [Int32]) async throws -> NotikaGenerationCommandOutcome
@@ -152,12 +152,8 @@ public struct NotikaGenerationCoordinator: Sendable {
             let tuistEnvironment = childEnvironment.merging(cached ? ["USE_CACHED_DEPENDENCIES": "1"] : [:]) { _, new in new }
             let tuist = try DarwinWorkloadCommand(executable: root.path + "/Scripts/tuist", arguments: ["generate", "--no-open"],
                                                  workingDirectory: root.path, environment: tuistEnvironment)
-            let outcome = try await HostCompilationAdmission().withLease(
-                environment: environment, label: "Notika Tuist generation", waitSeconds: waitSeconds
-            ) { compilation in
-                try root.validate()
-                return try await commandOperation(tuist, graphDescriptors + compilation.inheritedDescriptors())
-            }
+            try root.validate()
+            let outcome = try await commandOperation(tuist, graphDescriptors)
             observations.append(.init(step: "tuist-generate", command: tuist, outcome: outcome))
             try requireGenerationSuccess(outcome, step: "tuist-generate")
             try Task.checkCancellation()

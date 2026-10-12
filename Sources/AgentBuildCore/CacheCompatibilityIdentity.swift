@@ -228,6 +228,10 @@ public struct CacheCompatibilityIdentity: Equatable, Sendable {
     }
 
     public func currentStorageDigest() throws -> String {
+        try storageDigest(version: 3, normalizeDebugScheme: true)
+    }
+
+    public func schema3StorageDigest() throws -> String {
         try storageDigest(version: 2, normalizeDebugScheme: true)
     }
 
@@ -236,24 +240,25 @@ public struct CacheCompatibilityIdentity: Equatable, Sendable {
     }
 
     /// Metadata v1 used the complete material; v2 used version-1 projected
-    /// storage; v3 uses the current version-2 storage projection.
-    public func cacheKey(metadataSchemaVersion: Int = 3) throws -> String {
+    /// storage; v3 used version-2 storage; v4 lets Xcode invalidate changed inputs.
+    public func cacheKey(metadataSchemaVersion: Int = 4) throws -> String {
         let digest: String
         switch metadataSchemaVersion {
         case 1: digest = try executionDigest()
         case 2: digest = try legacyStorageDigest()
-        case 3: digest = try currentStorageDigest()
+        case 3: digest = try schema3StorageDigest()
+        case 4: digest = try currentStorageDigest()
         default: throw CacheCompatibilityError.unsupportedMetadataSchema(metadataSchemaVersion)
         }
         return String(digest.prefix(24))
     }
 
-    public func compatibilityFamily(metadataSchemaVersion: Int = 3) throws -> CanonicalJSONValue {
-        guard (1...3).contains(metadataSchemaVersion) else {
+    public func compatibilityFamily(metadataSchemaVersion: Int = 4) throws -> CanonicalJSONValue {
+        guard (1...4).contains(metadataSchemaVersion) else {
             throw CacheCompatibilityError.unsupportedMetadataSchema(metadataSchemaVersion)
         }
         var values = materialValues
-        if metadataSchemaVersion == 3 { normalizeOrdinaryDebugScheme(in: &values) }
+        if metadataSchemaVersion >= 3 { normalizeOrdinaryDebugScheme(in: &values) }
         let names = Set(["canonicalWorktree", "scheme", "configuration", "destinationFamily", "purpose", "buildFlags"])
         return .object(values.filter { names.contains($0.key) })
     }
@@ -266,7 +271,7 @@ public struct CacheCompatibilityIdentity: Equatable, Sendable {
               admittedExecutionDigest == (try executionDigest()) else {
             throw CacheCompatibilityError.incompatibleAdmission
         }
-        let acceptedKeys = try (1...3).map { try self.cacheKey(metadataSchemaVersion: $0) }
+        let acceptedKeys = try (1...4).map { try self.cacheKey(metadataSchemaVersion: $0) }
         guard acceptedKeys.contains(cacheKey) else { throw CacheCompatibilityError.incompatibleAdmission }
     }
 
@@ -311,6 +316,12 @@ public struct CacheCompatibilityIdentity: Equatable, Sendable {
     private func storageDigest(version: Int64, normalizeDebugScheme: Bool) throws -> String {
         var projected = materialValues
         projected.removeValue(forKey: "generatedGraphDigest")
+        if version >= 3 {
+            for name in ["gitlinks", "submoduleStatusDigest", "submoduleWorktreeDigest",
+                         "projectGraphDigest", "resolvedDependenciesDigest"] {
+                projected.removeValue(forKey: name)
+            }
+        }
         if normalizeDebugScheme { normalizeOrdinaryDebugScheme(in: &projected) }
         return try CanonicalJSONDigest.sha256(.object([
             "schemaVersion": .integer(version),

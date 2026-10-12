@@ -26,8 +26,8 @@ struct NotikaGenerationCoordinatorTests {
                 let name = URL(fileURLWithPath: command.executable).lastPathComponent
                 steps.withLock { $0.append(name) }
                 if name == "tuist" {
-                    #expect(descriptors.count == 2)
-                    #expect(try !fixture.compilationAvailable())
+                    #expect(descriptors.count == 1)
+                    #expect(try fixture.compilationAvailable())
                     #expect(command.arguments == ["generate", "--no-open"])
                     #expect(command.environment["USE_CACHED_DEPENDENCIES"] == (cached ? "1" : nil))
                     #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Notika.xcodeproj"))
@@ -60,6 +60,34 @@ struct NotikaGenerationCoordinatorTests {
         #expect(report.sourceBefore.generatedGraphDigest != report.sourceAfter.generatedGraphDigest)
         #expect(report.removedWorkspaceScheme)
         #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Notika.xcworkspace/xcshareddata/xcschemes/Notika-Workspace.xcscheme"))
+        #expect(try fixture.graphAvailable())
+        #expect(try fixture.compilationAvailable())
+    }
+
+    @Test(arguments: [false, true])
+    func generatesWhileHostCompilationIsOccupied(cached: Bool) async throws {
+        let fixture = try GenerationFixture()
+        defer { fixture.remove() }
+        try await HostCompilationAdmission().withLease(environment: fixture.environment) { _ in
+            let report = try await NotikaGenerationCoordinator().run(
+                repository: fixture.path, registryRoot: fixture.graphRegistry.path,
+                environment: fixture.environment, cached: cached, waitSeconds: 0,
+                identityCapture: GenerationIdentityCapture(),
+                commandOperation: { command, descriptors in
+                    #expect(try !fixture.compilationAvailable())
+                    #expect(try !fixture.graphAvailable())
+                    #expect(descriptors.count == 1)
+                    if command.executable.hasSuffix("/tuist") {
+                        try fixture.generatedGraph("while compiling")
+                    }
+                    return generationSuccess
+                }, retirementOperation: { _, _ in
+                    Issue.record("no previous graph exists")
+                    return generationSuccess
+                })
+            #expect(report.commands.count == 3)
+            #expect(report.commands.allSatisfy { $0.outcome.succeeded })
+        }
         #expect(try fixture.graphAvailable())
         #expect(try fixture.compilationAvailable())
     }

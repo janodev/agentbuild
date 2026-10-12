@@ -8,22 +8,22 @@ import Testing
 @Suite("Notika supervised generation driver")
 struct NotikaGenerationDriverTests {
     @Test(arguments: [false, true])
-    func actualToolsRetainRawEvidenceAndWriterGraphCompilationHierarchy(cached: Bool) async throws {
+    func actualToolsRetainRawEvidenceAndWriterGraphOwnership(cached: Bool) async throws {
         let fixture = try GenerationDriverFixture()
         defer { fixture.remove() }
         let steps = Mutex<[String]>([])
         let driver = NotikaGenerationDriver(identityCapture: GenerationDriverIdentityCapture(), captureOperation: { helper, command, descriptors, root, directory in
             #expect(try !fixture.available("notika:sessions:" + fixture.path))
             #expect(try !fixture.available(CacheCompatibilityIdentity.graphResourceName(canonicalWorktree: fixture.path)))
-            let compiling = command.executable == fixture.path + "/Scripts/tuist"
+            let generating = command.executable == fixture.path + "/Scripts/tuist"
             let compileAvailable = try fixture.compilationAvailable()
-            #expect(compileAvailable == !compiling)
-            #expect(descriptors.count == (compiling ? 3 : 2))
+            #expect(compileAvailable)
+            #expect(descriptors.count == 2)
             #expect(descriptors.allSatisfy { fcntl($0, F_GETFD) >= 0 })
             #expect(fcntl(directory, F_GETFD) >= 0)
             #expect(command.environment["NOTIKA_ROUTE_AUTHORITY_FD"] == nil)
             #expect(command.environment["PATH"]?.hasPrefix(fixture.path + "/Scripts:") == true)
-            if compiling {
+            if generating {
                 #expect(command.arguments == ["generate", "--no-open"])
                 #expect(command.environment["USE_CACHED_DEPENDENCIES"] == (cached ? "1" : nil))
             } else { #expect(command.environment["USE_CACHED_DEPENDENCIES"] == nil) }

@@ -10,11 +10,11 @@ struct CacheCompatibilityIdentityTests {
     func profilesAndHistoricalProjectionsMatchPython(_ oracle: CacheOracle) throws {
         let identity = try fixtureIdentity(overrides: oracle.overrides)
         #expect(try identity.executionDigest() == oracle.execution, "\(oracle.name)")
-        #expect(try identity.currentStorageDigest() == oracle.currentStorage, "\(oracle.name)")
+        #expect(try identity.schema3StorageDigest() == oracle.currentStorage, "\(oracle.name)")
         #expect(try identity.legacyStorageDigest() == oracle.legacyStorage, "\(oracle.name)")
         #expect(try CanonicalJSONDigest.sha256(identity.compatibilityFamily()) == oracle.currentFamily, "\(oracle.name)")
         #expect(try CanonicalJSONDigest.sha256(identity.compatibilityFamily(metadataSchemaVersion: 2)) == oracle.legacyFamily, "\(oracle.name)")
-        #expect(try identity.cacheKey() == String(oracle.currentStorage.prefix(24)))
+        #expect(try identity.cacheKey(metadataSchemaVersion: 3) == String(oracle.currentStorage.prefix(24)))
         #expect(try identity.cacheKey(metadataSchemaVersion: 2) == String(oracle.legacyStorage.prefix(24)))
         #expect(try identity.cacheKey(metadataSchemaVersion: 1) == String(oracle.execution.prefix(24)))
         #expect(try CacheCompatibilityIdentity(keyMaterial: identity.keyMaterial) == identity)
@@ -40,16 +40,11 @@ struct CacheCompatibilityIdentityTests {
         }
     }
 
-    @Test func storageRetainsEveryOtherCompatibilityInput() throws {
+    @Test func storageSeparatesToolchainsAndBuildProfiles() throws {
         let baseline = try fixtureIdentity().currentStorageDigest()
         let variants: [[String: CanonicalJSONValue]] = [
             ["canonicalWorktree": .string("/Users/jano/Projects/Other/Notika")],
             ["toolchainHash": .string(zeroDigest)],
-            ["gitlinks": .array([.object(["path": .string("mk/漢字"), "commit": .string(String(repeating: "2", count: 40))])])],
-            ["submoduleStatusDigest": .string(zeroDigest)],
-            ["submoduleWorktreeDigest": .string(zeroDigest)],
-            ["projectGraphDigest": .string(zeroDigest)],
-            ["resolvedDependenciesDigest": .string(zeroDigest)],
             ["configuration": .string("Release")],
             ["scheme": .string("NotikaiPad"), "destinationFamily": .string("ios-simulator-arm64")],
             ["purpose": .string("agent-loop-composite-acceptance")],
@@ -59,18 +54,39 @@ struct CacheCompatibilityIdentityTests {
         }
     }
 
+    @Test func changedProjectAndDependenciesReuseStorageButRequireFreshExecutionAdmission() throws {
+        let baseline = try fixtureIdentity()
+        let variants: [[String: CanonicalJSONValue]] = [
+            ["gitlinks": .array([.object(["path": .string("mk/漢字"), "commit": .string(String(repeating: "2", count: 40))])])],
+            ["submoduleStatusDigest": .string(zeroDigest)],
+            ["submoduleWorktreeDigest": .string(zeroDigest)],
+            ["projectGraphDigest": .string(zeroDigest)],
+            ["resolvedDependenciesDigest": .string(zeroDigest)],
+            ["generatedGraphDigest": .string(zeroDigest)],
+        ]
+        for variant in variants {
+            let changed = try fixtureIdentity(overrides: variant)
+            #expect(try changed.cacheKey() == baseline.cacheKey())
+            #expect(try changed.executionDigest() != baseline.executionDigest())
+            #expect(throws: CacheCompatibilityError.incompatibleAdmission) {
+                try changed.validateAdmission(admittedExecutionDigest: baseline.executionDigest(), cacheKey: baseline.cacheKey())
+            }
+            try changed.validateAdmission(admittedExecutionDigest: changed.executionDigest(), cacheKey: baseline.cacheKey())
+        }
+    }
+
     @Test func historicalKeysRequireTheExactAdmittedProfile() throws {
         let identity = try fixtureIdentity()
         let admitted = try identity.executionDigest()
-        for version in 1...3 {
+        for version in 1...4 {
             try identity.validateAdmission(admittedExecutionDigest: admitted,
                                            cacheKey: identity.cacheKey(metadataSchemaVersion: version))
         }
         #expect(throws: CacheCompatibilityError.incompatibleAdmission) {
             try identity.validateAdmission(admittedExecutionDigest: admitted, cacheKey: String(repeating: "f", count: 24))
         }
-        #expect(throws: CacheCompatibilityError.unsupportedMetadataSchema(4)) {
-            try identity.cacheKey(metadataSchemaVersion: 4)
+        #expect(throws: CacheCompatibilityError.unsupportedMetadataSchema(5)) {
+            try identity.cacheKey(metadataSchemaVersion: 5)
         }
         #expect(throws: CacheCompatibilityError.unsupportedMetadataSchema(0)) {
             try identity.compatibilityFamily(metadataSchemaVersion: 0)

@@ -37,7 +37,7 @@ struct NotikaCacheCustodyTests {
         }
     }
 
-    @Test(arguments: [1, 2, 3])
+    @Test(arguments: [1, 2, 3, 4])
     func historicalKeySelectsExactSchemaAndFactoryRoundTrips(_ schema: Int) async throws {
         let fixture = try CacheCustodyFixture(schema: schema)
         defer { fixture.base.remove() }
@@ -81,6 +81,33 @@ struct NotikaCacheCustodyTests {
             #expect(updated.cacheKey == first.cacheKey)
             #expect(try cacheTestStatus(fixture.usageURL.path).st_ino != firstInode)
             #expect(try custody.readUsage() == updated)
+        }
+    }
+
+    @Test func changedInputsReuseExistingBuildProductsAndRefreshUsage() async throws {
+        let fixture = try CacheCustodyFixture()
+        defer { fixture.base.remove() }
+        let product = fixture.cacheURL.appendingPathComponent("existing-object.o")
+        let first = try await fixture.withOwnership { ownership in
+            let custody = try NotikaCacheCustody(identity: fixture.identity, ownership: ownership)
+            try Data("retained build product".utf8).write(to: product)
+            return try custody.publishUsage(sessionID: "before-input-edit", usedAt: fixture.firstUse)
+        }
+        let inode = try cacheTestStatus(fixture.cacheURL.path).st_ino
+        let changed = try cacheTestIdentity(worktree: fixture.base.directory.path,
+                                           inputDigest: String(repeating: "b", count: 64))
+        #expect(try NotikaProjectOwnershipPlan(identity: changed) == fixture.plan)
+        try await fixture.withOwnership { ownership in
+            let custody = try NotikaCacheCustody(identity: changed, ownership: ownership)
+            #expect(try custody.readUsage() == first)
+            #expect(try cacheTestStatus(fixture.cacheURL.path).st_ino == inode)
+            #expect(try Data(contentsOf: product) == Data("retained build product".utf8))
+            let updated = try custody.publishUsage(sessionID: "after-input-edit", usedAt: fixture.firstUse.addingTimeInterval(1))
+            #expect(updated.schemaVersion == 4)
+            #expect(updated.compatibilityIdentity == changed)
+            #expect(updated.compatibilityIdentitySHA256 != first.compatibilityIdentitySHA256)
+            #expect(updated.createdAtMicrosecondsSince1970 == first.createdAtMicrosecondsSince1970)
+            #expect(updated.cacheKey == first.cacheKey)
         }
     }
 
@@ -309,7 +336,7 @@ private struct CacheCustodyFixture: Sendable {
     var cacheURL: URL { URL(fileURLWithPath: plan.cacheDirectory!) }
     var usageURL: URL { cacheURL.appendingPathComponent(NotikaCacheCustody.metadataFilename) }
 
-    init(schema: Int = 3) throws {
+    init(schema: Int = 4) throws {
         base = try CompilationFixture()
         identity = try cacheTestIdentity(worktree: base.directory.path)
         plan = try NotikaProjectOwnershipPlan(identity: identity, admittedCacheKey: identity.cacheKey(metadataSchemaVersion: schema))
@@ -320,12 +347,13 @@ private struct CacheCustodyFixture: Sendable {
     }
 }
 
-private func cacheTestIdentity(worktree: String, scheme: String = "Notika") throws -> CacheCompatibilityIdentity {
+private func cacheTestIdentity(worktree: String, scheme: String = "Notika",
+                               inputDigest: String = String(repeating: "a", count: 64)) throws -> CacheCompatibilityIdentity {
     let digest = String(repeating: "a", count: 64)
     return try CacheCompatibilityIdentity(
         canonicalWorktree: worktree, toolchainHash: digest, gitlinks: [],
-        submoduleStatusDigest: digest, submoduleWorktreeDigest: digest,
-        projectGraphDigest: digest, generatedGraphDigest: digest, resolvedDependenciesDigest: digest,
+        submoduleStatusDigest: inputDigest, submoduleWorktreeDigest: inputDigest,
+        projectGraphDigest: inputDigest, generatedGraphDigest: inputDigest, resolvedDependenciesDigest: inputDigest,
         scheme: scheme, configuration: "Debug", destinationFamily: "macos-arm64",
         buildFlags: ["-disableAutomaticPackageResolution"]
     )

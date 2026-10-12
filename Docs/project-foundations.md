@@ -44,13 +44,18 @@ Make recipes to reconstruct them.
 `CacheCompatibilityIdentity` validates the complete Notika compatibility
 material before hashing it. Source HEAD, diffs, and untracked file observations
 are separate from this material. Exact execution retains the generated graph
-and selected scheme. Current storage omits the generated graph digest and
+and selected scheme. Current storage omits project, generated graph, dependency lock, gitlink, and
+submodule fingerprints and
 normalizes ordinary Debug app/UI scheme pairs, provided no purpose is present.
-Performance schemes, configurations, flags, dependencies, toolchains, and
+Xcode handles incremental invalidation when project or dependency inputs change.
+Performance schemes, configurations, flags, toolchains, and
 worktrees retain their separate identities.
 
-Xcode usage metadata versions 1, 2, and 3 retain their respective full-material,
-historical projected-storage, and current shared-storage cache keys. Accepting
+Xcode usage metadata versions 1, 2, and 3 retain their historical cache keys.
+Version 4 uses stable worktree/toolchain/build-profile storage keys. Exact
+execution identities still retain every project and dependency fingerprint.
+Adopting version 4 selects a new directory once; older caches remain readable
+under their original schemas and are not relocated automatically. Accepting
 a historical key still requires the exact admitted execution digest.
 Resource names retain Notika's existing graph, policy, and cache prefixes so
 historical retained evidence binds the same kernel-lock namespace. Independent
@@ -177,7 +182,7 @@ separate observations.
 
 # Cache and generation custody
 
-`NotikaCacheUsageRecord` validates versions 1–3 against their respective cache
+`NotikaCacheUsageRecord` validates versions 1–4 against their respective cache
 keys, exact profile, repository, directory inode/device, owner and lifecycle.
 Its timestamps use checked Gregorian integer arithmetic before daily policy.
 `NotikaCacheCustody` requires live graph/policy/cache ownership and pins the
@@ -188,7 +193,9 @@ This publisher does not collect caches.
 `NotikaGenerationCoordinator` holds the exclusive graph through artifact
 preparation, retirement of the two fixed generated graph entries, pinned Tuist
 generation, workspace validation, and final source observation. Preparation
-must pass before an old graph is retired. Only Tuist uses compilation admission.
+must pass before an old graph is retired. Generation does not acquire
+`host:compile`; its exclusive graph ownership still prevents concurrent use or
+regeneration of the same checkout.
 The caller supplies supervised command and Trash operations; no freshness stamp
 is inferred from the presence of a workspace.
 

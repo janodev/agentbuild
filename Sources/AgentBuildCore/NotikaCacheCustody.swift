@@ -66,7 +66,12 @@ public enum NotikaCacheUsageFactory {
             "lastSessionID": .string(sessionID),
         ]
         if schema != 1 {
-            let storage = schema == 3 ? try identity.currentStorageDigest() : try identity.legacyStorageDigest()
+            let storage: String
+            switch schema {
+            case 4: storage = try identity.currentStorageDigest()
+            case 3: storage = try identity.schema3StorageDigest()
+            default: storage = try identity.legacyStorageDigest()
+            }
             value["storageIdentitySHA256"] = .string(storage)
         }
         var bytes = try CanonicalJSONDigest.encode(.object(value))
@@ -75,7 +80,7 @@ public enum NotikaCacheUsageFactory {
     }
 
     fileprivate static func schemaVersion(identity: CacheCompatibilityIdentity, cacheKey: String) throws -> Int {
-        for version in [3, 2, 1] where try identity.cacheKey(metadataSchemaVersion: version) == cacheKey { return version }
+        for version in [4, 3, 2, 1] where try identity.cacheKey(metadataSchemaVersion: version) == cacheKey { return version }
         throw CacheCompatibilityError.incompatibleAdmission
     }
 }

@@ -141,7 +141,7 @@ struct NotikaCacheUsageRecordTests {
         }
     }
 
-    @Test(arguments: [0, 4, 9])
+    @Test(arguments: [0, 5, 9])
     func unsupportedSchemasAreRejected(_ version: Int) {
         #expect(throws: NotikaCacheUsageError.invalidSchemaVersion) {
             try admitUsage(usageSchema3.replacingOccurrences(of: #""schemaVersion":3"#, with: "\"schemaVersion\":" + String(version)))

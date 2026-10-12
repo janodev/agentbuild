@@ -110,7 +110,7 @@ public struct NotikaCacheUsageRecord: Equatable, Sendable {
         }
         let object = try document.root.requireObject()
         let rawVersion = try usageUnsigned("schemaVersion", in: object)
-        guard (1...3).contains(rawVersion) else { throw NotikaCacheUsageError.invalidSchemaVersion }
+        guard (1...4).contains(rawVersion) else { throw NotikaCacheUsageError.invalidSchemaVersion }
         let version = Int(rawVersion)
         var keys = [
             "schemaVersion", "resourceID", "repository", "cacheRoot", "cacheKey", "cachePath",
@@ -159,6 +159,7 @@ public struct NotikaCacheUsageRecord: Equatable, Sendable {
         switch version {
         case 1: storageDigest = nil
         case 2: storageDigest = try identity.legacyStorageDigest()
+        case 3: storageDigest = try identity.schema3StorageDigest()
         default: storageDigest = try identity.currentStorageDigest()
         }
         if let storageDigest {
