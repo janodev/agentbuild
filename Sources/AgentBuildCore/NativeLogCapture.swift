@@ -495,7 +495,12 @@ private final class CaptureFiles: Sendable {
     private let combinedReader: Int32
     private let combinedWriter: Int32
     private let watch: Int32
-    private let eventAccess: Mutex<NativeLogCaptureFailure?> = Mutex(nil)
+    private struct WatchState {
+        var failure: NativeLogCaptureFailure?
+        var finalized = false
+    }
+
+    private let eventAccess: Mutex<WatchState> = Mutex(WatchState())
 
     init(root: String, runID: String) throws {
         artifacts = try SessionArtifacts(root: root, runID: runID)
@@ -597,14 +602,15 @@ private final class CaptureFiles: Sendable {
     }
 
     func armFinalMutationWatch(includeWrites: Bool = true) throws {
-        try eventAccess.withLock { failure in
-            try checkWatchLocked(&failure)
+        try eventAccess.withLock { state in
+            try checkWatchLocked(&state)
             do {
                 try Self.armWatch(watch: watch, root: root, directory: directory,
                                   outputReader: outputReader, errorReader: errorReader,
                                   combinedReader: combinedReader, includeWrites: includeWrites)
+                state.finalized = true
             } catch let error as NativeLogCaptureFailure {
-                failure = error
+                state.failure = error
                 throw error
             }
         }
@@ -633,24 +639,43 @@ private final class CaptureFiles: Sendable {
     }
 
     func checkWatch() throws {
-        try eventAccess.withLock { failure in try checkWatchLocked(&failure) }
+        try eventAccess.withLock { state in try checkWatchLocked(&state) }
     }
 
-    private func checkWatchLocked(_ failure: inout NativeLogCaptureFailure?) throws {
-        if let failure { throw failure }
-        var event = kevent()
-        var timeout = timespec(tv_sec: 0, tv_nsec: 0)
-        var count: Int32
-        repeat { count = captureKevent(watch, nil, 0, &event, 1, &timeout) } while count < 0 && errno == EINTR
-        if count < 0 {
-            let error = captureFailure("readCaptureWatch")
-            failure = error
-            throw error
-        }
-        if count > 0 {
+    private func checkWatchLocked(_ state: inout WatchState) throws {
+        if let failure = state.failure { throw failure }
+        while true {
+            var event = kevent()
+            var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+            var count: Int32
+            repeat { count = captureKevent(watch, nil, 0, &event, 1, &timeout) } while count < 0 && errno == EINTR
+            if count < 0 {
+                let error = captureFailure("readCaptureWatch")
+                state.failure = error
+                throw error
+            }
+            guard count > 0 else { return }
+            let descriptor = Int32(event.ident)
+            if !state.finalized, event.flags & UInt16(EV_ERROR) == 0,
+               event.fflags == UInt32(NOTE_ATTRIB),
+               [outputReader, errorReader, combinedReader].contains(descriptor) {
+                // Live logs receive metadata notifications even when their
+                // custody is unchanged. Validate every pinned binding before
+                // admitting one. Finalized logs reject even restored changes.
+                do { try validateBindings() }
+                catch {
+                    let failure = (error as? NativeLogCaptureFailure)
+                        ?? NativeLogCaptureFailure(operation: "captureBinding", detail: String(describing: error))
+                    state.failure = failure
+                    throw failure
+                }
+                continue
+            }
+            let labels = [root: "capture root", directory: "capture directory",
+                          outputReader: "stdout.log", errorReader: "stderr.log", combinedReader: "combined.log"]
             let error = NativeLogCaptureFailure(operation: "capturePathMutation", code: ESTALE,
-                                                detail: "vnode event \(event.fflags)")
-            failure = error
+                                                detail: "vnode event \(event.fflags) on \(labels[descriptor] ?? "unknown descriptor")")
+            state.failure = error
             throw error
         }
     }

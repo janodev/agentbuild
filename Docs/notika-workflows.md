@@ -105,6 +105,15 @@ bytes. All three files require pinned custody, matching sizes and digests, EOF,
 and publication revalidation. Overflow or any log failure makes capture
 incomplete while the pipes continue draining through worker retirement.
 
+While logs are being captured, a metadata-only event on a log file triggers
+immediate revalidation of all pinned paths, owners, private permissions and
+single-link file bindings. An unchanged valid binding remains admitted; the
+event alone does not prove evidence mutation. Other watched directory, rename,
+unlink and link events remain fatal. After pipe EOF, log writes and all metadata events
+are fatal through publication, including a permission change restored before
+revalidation. Active capture does not claim historical permission continuity
+between observations; final bytes must still match the captured sizes and hashes.
+
 Historical retention readers can admit an older closed record with only the
 two original streams. They record combined evidence as unavailable. Current
 publication and result consumers require the combined file.

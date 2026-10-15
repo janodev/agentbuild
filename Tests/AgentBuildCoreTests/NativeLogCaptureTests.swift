@@ -6,6 +6,58 @@ import Testing
 
 @Suite("Native raw log capture custody")
 struct NativeLogCaptureTests {
+    @Test(arguments: [NativeLogStream.standardOutput, .standardError, .combined])
+    func liveSameModeMetadataEventsDoNotInvalidateCapturedBytes(_ stream: NativeLogStream) async throws {
+        let fixture = try LogCaptureFixture()
+        defer { fixture.remove() }
+        let capture = try fixture.capture()
+        let name = stream == .standardOutput ? "stdout.log" : stream == .standardError ? "stderr.log" : "combined.log"
+        let path = capture.directoryPath + "/" + name
+        // chmod emits NOTE_ATTRIB even when the effective permissions stay
+        // unchanged. A metadata notification alone cannot establish tampering.
+        try #require(chmod(path, 0o600) == 0)
+        let bytes = Data("unchanged custody".utf8)
+        try logWrite(bytes, descriptor: capture.standardOutputDescriptor)
+        let result = await capture.finishAfterWorkerRetirement()
+        #expect(result.captureComplete)
+        #expect(result.standardOutput.sha256 == CanonicalJSONDigest.digest(bytes))
+        #expect(result.combined.sha256 == CanonicalJSONDigest.digest(bytes))
+        try capture.revalidateForPublication(result)
+    }
+
+    @Test(arguments: [NativeLogStream.standardOutput, .standardError, .combined])
+    func liveUnsafePermissionsStillInvalidateCapture(_ stream: NativeLogStream) async throws {
+        let fixture = try LogCaptureFixture()
+        defer { fixture.remove() }
+        let capture = try fixture.capture()
+        let name = stream == .standardOutput ? "stdout.log" : stream == .standardError ? "stderr.log" : "combined.log"
+        let path = capture.directoryPath + "/" + name
+        try #require(chmod(path, 0o640) == 0)
+        try await logWaitUntil { capture.firstFailure != nil }
+        try #require(chmod(path, 0o600) == 0)
+        let result = await capture.finishAfterWorkerRetirement()
+        #expect(!result.captureComplete)
+        #expect(throws: NativeLogCaptureFailure.self) { try capture.revalidateForPublication(result) }
+    }
+
+    @Test(arguments: [NativeLogStream.standardOutput, .standardError, .combined])
+    func finalizedCaptureRejectsRestoredPermissionChanges(_ stream: NativeLogStream) async throws {
+        let fixture = try LogCaptureFixture()
+        defer { fixture.remove() }
+        let capture = try fixture.capture()
+        let bytes = Data("finalized bytes".utf8)
+        try logWrite(bytes, descriptor: capture.standardOutputDescriptor)
+        let result = await capture.finishAfterWorkerRetirement()
+        try #require(result.captureComplete)
+        let name = stream == .standardOutput ? "stdout.log" : stream == .standardError ? "stderr.log" : "combined.log"
+        let path = capture.directoryPath + "/" + name
+        try #require(chmod(path, 0o640) == 0)
+        try #require(chmod(path, 0o600) == 0)
+        #expect(throws: NativeLogCaptureFailure.self) { try capture.revalidateForPublication(result) }
+        #expect(capture.firstFailure?.operation == "capturePathMutation")
+        #expect(throws: NativeLogCaptureFailure.self) { try capture.revalidateForPublication(result) }
+    }
+
     @Test func siblingPhaseCapturesAndPublicationDoNotInvalidateEarlierLogs() async throws {
         let fixture = try LogCaptureFixture()
         defer { fixture.remove() }
