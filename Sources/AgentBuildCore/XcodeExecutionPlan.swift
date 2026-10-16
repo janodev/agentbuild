@@ -60,6 +60,7 @@ public struct XcodeExecutionPlan: Equatable, Sendable {
             if actions.contains(argument) {
                 positions.append(index)
             } else if argument != "-disableAutomaticPackageResolution",
+                      argument != "-allowProvisioningUpdates",
                       !argument.hasPrefix("-only-testing:"),
                       (argument.hasPrefix("-") || !argument.contains("=")) {
                 throw XcodePlanError.unsupportedArgument(argument)

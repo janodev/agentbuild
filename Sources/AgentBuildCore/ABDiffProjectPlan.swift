@@ -78,6 +78,9 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         if canonicalRoute == "cli-build", selectedPlatform != "macos" {
             throw ABDiffProjectError.invalidRequest("cli-build supports macos only")
         }
+        if canonicalRoute == "test-transport", selectedPlatform != "macos" {
+            throw ABDiffProjectError.invalidRequest("test-transport supports macos only")
+        }
         let testing = Self.testRoutes.contains(canonicalRoute)
         let resolvedConfiguration = configuration ?? (canonicalRoute == "build-release" ? "Release"
             : testing ? "DebugUITests" : "Debug")
@@ -110,8 +113,10 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
                   components.allSatisfy({ Self.validSelectorComponent(String($0)) }) else {
                 throw ABDiffProjectError.invalidRequest("invalid only-testing selector")
             }
+            let supportedTargets = selectedPlatform == "macos"
+                ? ["ABDiffTests", "ABDiffTextCoreTests"] : ["ABDiffIPadTests"]
             if components.count == 3,
-               components.first.map(String.init) != (selectedPlatform == "macos" ? "ABDiffTests" : "ABDiffIPadTests") {
+               !supportedTargets.contains(components.first.map(String.init) ?? "") {
                 throw ABDiffProjectError.invalidRequest("only-testing selector names an unsupported target")
             }
         }
@@ -149,16 +154,16 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
     private static let nativeRoutes: Set<String> = [
         "build", "build-and-test", "build-release", "cli-build", "docbuild",
         "test", "test-show-only-errors", "test-unit", "test-unit-file", "test-unit-focused",
-        "test-ui", "test-ui-file", "test-ui-safe", "test-coverage", "test-unit-coverage",
+        "test-ui", "test-ui-file", "test-ui-safe", "test-transport", "test-coverage", "test-unit-coverage",
     ]
 
     private static let testRoutes: Set<String> = [
         "build-and-test", "test", "test-show-only-errors", "test-unit", "test-unit-file",
-        "test-unit-focused", "test-ui", "test-ui-file", "test-ui-safe", "test-coverage", "test-unit-coverage",
+        "test-unit-focused", "test-ui", "test-ui-file", "test-ui-safe", "test-transport", "test-coverage", "test-unit-coverage",
     ]
 
     private static let uiRoutes: Set<String> = [
-        "build-and-test", "test", "test-show-only-errors", "test-ui", "test-ui-file", "test-ui-safe", "test-coverage",
+        "build-and-test", "test", "test-show-only-errors", "test-ui", "test-ui-file", "test-ui-safe", "test-transport", "test-coverage",
     ]
 
     private static let aliases: [String: String] = [
@@ -267,6 +272,7 @@ public enum ABDiffProjectPlanner {
                                               environment: environment, capture: observer)
         let unit = request.route.hasPrefix("test-unit")
         let scheme = request.route == "cli-build" ? "ABDiffCLI"
+            : request.route == "test-transport" ? "ABDiffMergetoolTests"
             : request.platform == "ipad-simulator" ? "ABDiffIPad" : unit ? "ABDiffTests" : "ABDiff"
         let key = try CanonicalJSONDigest.sha256(.object([
             "schemaVersion": .integer(1), "repository": .string(repository), "platform": .string(request.platform),
@@ -291,6 +297,7 @@ public enum ABDiffProjectPlanner {
                           request.isTesting ? "test" : request.route == "docbuild" ? "docbuild" : "build",
                           "-workspace", workspace, "-scheme", scheme, "-configuration", request.configuration,
                           "-destination", destination, "SDKROOT=\(identity["sdkPath"]!)"]
+            if request.platform == "macos" { native.append("-allowProvisioningUpdates") }
             if request.isTesting {
                 let resultBundle = environment["AGENTBUILD_ABDIFF_RESULT_BUNDLE"]
                     ?? repository + "/Artifacts/AgentSessions/PLAN/Tests.xcresult"
@@ -342,12 +349,19 @@ public enum ABDiffProjectPlanner {
 
     private static func testSelectors(request: ABDiffProjectRequest) -> [String] {
         let target = request.platform == "ipad-simulator" ? "ABDiffIPad" : "ABDiff"
+        if request.route == "test-transport" { return ["-only-testing:ABDiffMergetoolTests/SemanticControlTransportTests"] }
         if request.route == "test-unit-focused" {
             return request.onlyTesting.map { selector in
                 let prefix = target + "Tests"
-                let full = selector == prefix || selector.hasPrefix(prefix + "/") ? selector : prefix + "/" + selector
+                let targets = request.platform == "macos" ? [prefix, "ABDiffTextCoreTests"] : [prefix]
+                let includesTarget = targets.contains { selector == $0 || selector.hasPrefix($0 + "/") }
+                let full = includesTarget ? selector : prefix + "/" + selector
                 return "-only-testing:" + full
             }
+        }
+        if request.platform == "macos", ["test-unit", "test-unit-coverage"].contains(request.route),
+           FileManager.default.fileExists(atPath: request.repository + "/Tests/ABDiffTextCoreTests") {
+            return ["-only-testing:ABDiffTests", "-only-testing:ABDiffTextCoreTests"]
         }
         if request.route.hasPrefix("test-unit") || request.route.hasPrefix("test-ui") {
             var selector = target + (request.route.hasPrefix("test-unit") ? "Tests" : "UITests")

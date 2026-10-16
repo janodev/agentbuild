@@ -38,6 +38,16 @@ which enables the macOS UI-test logging configuration. Release remains an
 explicit selection. Focused selectors and file/method names travel as independent
 arguments, without shell evaluation.
 
+When the repository includes `Tests/ABDiffTextCoreTests`, broad macOS unit and
+unit-coverage routes also select that independent kernel target. Focused selectors
+may name `ABDiffTextCoreTests/Suite/method()` explicitly. `test-transport` runs
+`SemanticControlTransportTests` in the macOS `ABDiffMergetoolTests` scheme under
+a desktop lease because its tests launch the real application and CLI.
+
+macOS native routes allow Xcode to refresh the development provisioning profiles
+required by the app and its Help downloader extension using the configured Xcode
+account. Simulator builds do not require this provisioning step.
+
 The adapter invokes Xcode directly. A test request becomes build-for-testing and
 then test-without-building against the same cache and selected tests. Compilation
 holds the account-wide `host:compile` gate; runtime executes after releasing it.
@@ -111,5 +121,12 @@ or tool drift, and had no orchestration or publication failures. Generation
 reported its expected graph changes. The native checks are focused route
 validation, not a run of ABDiff's entire test suite.
 
-The installed copied release matches `.build/release/agentbuild`; its SHA-256 is
+The initial adoption release matched `.build/release/agentbuild`; its SHA-256 was
 `f6b276f6293b6092cf6bf936351f56b2320d7d02841635e70f412277e60a98d4`.
+
+The subsequent `assets` merge integration passed all 528 controller tests.
+Native validation covered 1,507 macOS unit tests (one opt-in test skipped),
+16 iPad unit tests, the three control-transport tests, and the selected parser,
+text-merge, hex viewport, footer, localization, and PDF UI tests. The transport
+receipt is `CEE9BF93-C84A-4CF2-A677-BF951361097D`; it selects the intended
+`SemanticControlTransportTests` suite explicitly.

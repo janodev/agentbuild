@@ -18,6 +18,7 @@ struct ABDiffProjectPlanTests {
         #expect(argument("-workspace", in: plan.logicalArguments)?.hasSuffix("ABDiff.xcworkspace") == true)
         #expect(plan.needsOuterLease == scenario.needsLease)
         #expect(plan.requiresMacUI == scenario.macUI)
+        #expect(plan.logicalArguments.contains("-allowProvisioningUpdates") == (scenario.platform == "macos"))
         #expect(ABDiffLeaseBoundary.requiresOuterLease(for: request) == scenario.needsLease)
         if let selector = scenario.selector {
             #expect(plan.logicalArguments.contains("-only-testing:" + selector))
@@ -64,6 +65,42 @@ struct ABDiffProjectPlanTests {
         }
         #expect(plan.destination == "platform=iOS Simulator,id=" + ABDiffPlanFixture.simulatorID)
         #expect(!FileManager.default.fileExists(atPath: fixture.path + "/pwn"))
+    }
+
+    @Test(arguments: ["test-unit", "test-unit-coverage"])
+    func broadMacUnitRunsIncludeTheIndependentTextCoreWhenPresent(_ route: String) async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(
+            at: fixture.directory.appendingPathComponent("Tests/ABDiffTextCoreTests"),
+            withIntermediateDirectories: true
+        )
+        let request = try ABDiffProjectRequest(repository: fixture.path, route: route)
+        let plan = try await ABDiffProjectPlanner.plan(request: request, environment: fixture.environment, capture: ABDiffToolCapture())
+        let expected = ["-only-testing:ABDiffTests", "-only-testing:ABDiffTextCoreTests"]
+        for phase in try #require(plan.xcodePlan).phases {
+            #expect(phase.arguments.filter { $0.hasPrefix("-only-testing:") } == expected)
+        }
+        let focused = try ABDiffProjectRequest(repository: fixture.path, route: "test-unit-file", file: "ParserTests")
+        let focusedPlan = try await ABDiffProjectPlanner.plan(request: focused, environment: fixture.environment, capture: ABDiffToolCapture())
+        #expect(focusedPlan.logicalArguments.filter { $0.hasPrefix("-only-testing:") } == ["-only-testing:ABDiffTests/ParserTests"])
+    }
+
+    @Test func focusedMacSelectorsCanNameTheIndependentTextCore() async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        let selectors = ["ABDiffTextCoreTests/KernelTests/comparesUnicode()", "ABDiffTests/ParserTests/parses()"]
+        let request = try ABDiffProjectRequest(repository: fixture.path, route: "test-unit-focused", onlyTesting: selectors)
+        let plan = try await ABDiffProjectPlanner.plan(request: request, environment: fixture.environment, capture: ABDiffToolCapture())
+        for phase in try #require(plan.xcodePlan).phases {
+            #expect(phase.arguments.filter { $0.hasPrefix("-only-testing:") } == selectors.map { "-only-testing:" + $0 })
+        }
+    }
+
+    @Test func transportTestsRejectTheIPadPlatformBeforePlanning() {
+        #expect(throws: (any Error).self) {
+            try ABDiffProjectRequest(repository: "/fixture/ABDiff", route: "test-transport", platform: "ipad-simulator")
+        }
     }
 
     @Test func fileAndMethodBecomeOneTargetQualifiedSelector() async throws {
@@ -212,6 +249,7 @@ struct ABDiffPlanCase: Sendable {
         .init(route: "build", platform: "macos", scheme: "ABDiff", configuration: "Debug", selector: nil, isTest: false, needsLease: false, macUI: false),
         .init(route: "build-release", platform: "macos", scheme: "ABDiff", configuration: "Release", selector: nil, isTest: false, needsLease: false, macUI: false),
         .init(route: "test-unit", platform: "macos", scheme: "ABDiffTests", configuration: "DebugUITests", selector: "ABDiffTests", isTest: true, needsLease: false, macUI: false),
+        .init(route: "test-transport", platform: "macos", scheme: "ABDiffMergetoolTests", configuration: "DebugUITests", selector: "ABDiffMergetoolTests/SemanticControlTransportTests", isTest: true, needsLease: true, macUI: true),
         .init(route: "test-ui", platform: "macos", scheme: "ABDiff", configuration: "DebugUITests", selector: "ABDiffUITests", isTest: true, needsLease: true, macUI: true),
         .init(route: "test", platform: "macos", scheme: "ABDiff", configuration: "DebugUITests", selector: nil, isTest: true, needsLease: true, macUI: true),
         .init(route: "build-and-test", platform: "macos", scheme: "ABDiff", configuration: "DebugUITests", selector: nil, isTest: true, needsLease: true, macUI: true),
