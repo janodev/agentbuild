@@ -1,7 +1,7 @@
 ---
 type: Project
 title: agentbuild
-description: A Swift CLI for owned Notika development, leased commands, durable raw logs, and native outcome evidence.
+description: A Swift CLI for owned Notika and ABDiff development, leased commands, durable raw logs, and native outcome evidence.
 tags: [swift, cli, builds, agentlease]
 ---
 
@@ -14,6 +14,11 @@ result/coverage consumers, fixed performance workloads, and semantic replay.
 Generation, exact-product macOS launch, DocC, direct Rust tests, preflight, and
 today-only cache/session maintenance are Swift-owned workflows. The former
 Python controller remains a test behavior reference without a live fallback.
+
+ABDiff has a separate native adapter for Tuist generation, macOS and iPad builds
+and tests, and supervised application launch. It shares compilation admission
+and native supervision with Notika while retaining its own project profiles and
+artifacts. See [ABDiff workflows](Docs/abdiff-workflows.md).
 
 The core preserves literal arguments, explicit resource ownership, per-stream
 and combined raw logs, actual native outcomes, and source/result evidence boundaries.
@@ -37,6 +42,10 @@ agentbuild notika run-preflight --repository /absolute/path/to/Notika
 agentbuild notika run-docs archive --repository /absolute/path/to/Notika
 agentbuild notika run-docs preview --repository /absolute/path/to/Notika --port 8000
 agentbuild notika cleanup --repository /absolute/path/to/Notika --json
+agentbuild abdiff plan --repository /absolute/path/to/ABDiff --route build-macos --json
+agentbuild abdiff generate --repository /absolute/path/to/ABDiff
+agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-macos
+agentbuild abdiff build --repository /absolute/path/to/ABDiff --route test-unit-file --file SomeTests
 ```
 
 Doctor requires successful version probes for `swift`, `xcodebuild`, and

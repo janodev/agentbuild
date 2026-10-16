@@ -109,9 +109,16 @@ While logs are being captured, a metadata-only event on a log file triggers
 immediate revalidation of all pinned paths, owners, private permissions and
 single-link file bindings. An unchanged valid binding remains admitted; the
 event alone does not prove evidence mutation. Other watched directory, rename,
-unlink and link events remain fatal. After pipe EOF, log writes and all metadata events
-are fatal through publication, including a permission change restored before
-revalidation. Active capture does not claim historical permission continuity
+unlink and link events remain fatal. After pipe EOF, the capture freezes inode,
+owner/group, mode, link count, size, flags, generation, and nanosecond modification,
+change and birth times. A pure metadata notification is admitted only when this
+complete non-access fingerprint and all pinned name bindings remain identical;
+Darwin access-time-only updates can emit such notifications without changing
+ctime. Writes, renames, links and changed sealed metadata remain fatal through
+publication, including a permission change restored before revalidation. Exact
+retained sizes and SHA-256 digests are checked again before publication; the
+fingerprint does not separately commit extended-attribute contents. Active
+capture does not claim historical permission continuity
 between observations; final bytes must still match the captured sizes and hashes.
 
 Historical retention readers can admit an older closed record with only the

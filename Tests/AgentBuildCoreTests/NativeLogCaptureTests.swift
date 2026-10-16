@@ -41,6 +41,38 @@ struct NativeLogCaptureTests {
     }
 
     @Test(arguments: [NativeLogStream.standardOutput, .standardError, .combined])
+    func finalizedCaptureAdmitsAccessTimeOnlyVnodeNotifications(_ stream: NativeLogStream) async throws {
+        let fixture = try LogCaptureFixture()
+        defer { fixture.remove() }
+        let capture = try fixture.capture()
+        let bytes = Data("retained bytes".utf8)
+        try logWrite(bytes, descriptor: capture.standardOutputDescriptor)
+        let result = await capture.finishAfterWorkerRetirement()
+        try #require(result.captureComplete)
+        let path = stream == .standardOutput ? result.standardOutput.path
+            : stream == .standardError ? result.standardError.path : result.combined.path
+        var before = stat()
+        try #require(lstat(path, &before) == 0)
+        var attributes = attrlist()
+        attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+        attributes.commonattr = attrgroup_t(ATTR_CMN_ACCTIME)
+        var accessTime = timespec(tv_sec: 100, tv_nsec: 0)
+        // Unlike ordinary reads, this real Darwin access-time update emits
+        // NOTE_ATTRIB while preserving both modification and change time.
+        try #require(setattrlist(path, &attributes, &accessTime, MemoryLayout<timespec>.size, 0) == 0)
+        var after = stat()
+        try #require(lstat(path, &after) == 0)
+        try #require(after.st_atimespec.tv_sec == 100)
+        try #require(after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec)
+        try #require(after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec)
+        try #require(after.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec)
+        try #require(after.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec)
+        try capture.revalidateForPublication(result)
+        try capture.revalidateForPublication(result)
+        #expect(capture.firstFailure == nil)
+    }
+
+    @Test(arguments: [NativeLogStream.standardOutput, .standardError, .combined])
     func finalizedCaptureRejectsRestoredPermissionChanges(_ stream: NativeLogStream) async throws {
         let fixture = try LogCaptureFixture()
         defer { fixture.remove() }

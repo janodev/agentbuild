@@ -1,7 +1,7 @@
 ---
 type: Architecture
 title: agentbuild design contract
-description: Integrated Swift execution, ownership, outcome, and evidence boundaries for generic commands and Notika development.
+description: Integrated Swift execution, ownership, outcome, and evidence boundaries for generic commands and project development.
 tags: [architecture, subprocess, agentlease, testing]
 ---
 
@@ -28,6 +28,12 @@ Doctor probes
 in isolated Subprocess sessions. Each probe has a ten-second timeout and a
 16 KiB limit per output stream. It reports optional `tuist`, `simlease`,
 `simslim`, `make`, and `git` presence without running them.
+
+The separate [ABDiff adapter](abdiff-workflows.md) uses the shared compilation,
+native supervision, and raw-capture primitives with explicit ABDiff schemes,
+test configurations, and artifact identities. Its Make entry points forward
+literal arguments to `agentbuild abdiff`; they do not enter Notika's route or
+cache contracts. ABDiff's device workflows use stock SimLease simulators.
 
 Doctor exits `0` only when all three required probes succeed, and `1` otherwise.
 JSON output has `schemaVersion: 1`, `toolVersion: 0.3.0`, `stage: bootstrap`,

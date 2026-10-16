@@ -13,5 +13,6 @@ tags: [development, build, documentation]
 - [Owned execution](execution.md) - Lock, subprocess, cancellation, raw-log, and outcome contracts for generic commands.
 - [Project foundations](project-foundations.md) - Typed Notika routes, compatible cache identities, compilation phases, and local-day retention policy.
 - [Notika workflows](notika-workflows.md) - Swift Make dispatch, generation, native tests, launch, Rust, and documentation routes.
+- [ABDiff workflows](abdiff-workflows.md) - ABDiff's native build/test adapter, generation, cache ownership, and supervised launch.
 - [Notika daily cleanup](notika-cleanup.md) - Today-only inactive cache/session collection with exclusive ownership and exact-folder Trash moves.
 - [Notika performance evidence](notika-performance.md) - Native report validation, attachment identity, and reproduced text/canvas measurements.

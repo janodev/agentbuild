@@ -164,6 +164,7 @@ public final class NativeLogCapture: Sendable {
         let error = errorWorker.result
         let combined = readOrder.result(path: files.path(.combined), reachedEOF: output.reachedEOF && error.reachedEOF)
         do {
+            try files.synchronizeLogs()
             try files.armFinalMutationWatch()
             try files.validate(output, stream: .standardOutput)
             try files.validate(error, stream: .standardError)
@@ -485,6 +486,46 @@ private final class CaptureStreamWorker: Sendable {
     }
 }
 
+/// Access time is bookkeeping rather than a retained-byte or custody identity.
+/// Darwin can notify NOTE_ATTRIB for an access-time-only setattrlist without
+/// changing ctime. All other admitted stat identity and content fields stay
+/// frozen from EOF through publication, including nanosecond change time.
+private struct CaptureLogFingerprint: Equatable, Sendable {
+    let device: dev_t
+    let inode: ino_t
+    let mode: mode_t
+    let owner: uid_t
+    let group: gid_t
+    let linkCount: nlink_t
+    let size: off_t
+    let flags: UInt32
+    let generation: UInt32
+    let modificationSeconds: Int
+    let modificationNanoseconds: Int
+    let changeSeconds: Int
+    let changeNanoseconds: Int
+    let birthSeconds: Int
+    let birthNanoseconds: Int
+
+    init(_ metadata: stat) {
+        device = metadata.st_dev
+        inode = metadata.st_ino
+        mode = metadata.st_mode
+        owner = metadata.st_uid
+        group = metadata.st_gid
+        linkCount = metadata.st_nlink
+        size = metadata.st_size
+        flags = metadata.st_flags
+        generation = metadata.st_gen
+        modificationSeconds = metadata.st_mtimespec.tv_sec
+        modificationNanoseconds = metadata.st_mtimespec.tv_nsec
+        changeSeconds = metadata.st_ctimespec.tv_sec
+        changeNanoseconds = metadata.st_ctimespec.tv_nsec
+        birthSeconds = metadata.st_birthtimespec.tv_sec
+        birthNanoseconds = metadata.st_birthtimespec.tv_nsec
+    }
+}
+
 private final class CaptureFiles: Sendable {
     let artifacts: SessionArtifacts
     private let rootPath: String
@@ -498,6 +539,7 @@ private final class CaptureFiles: Sendable {
     private struct WatchState {
         var failure: NativeLogCaptureFailure?
         var finalized = false
+        var finalizedLogs: [Int32: CaptureLogFingerprint] = [:]
     }
 
     private let eventAccess: Mutex<WatchState> = Mutex(WatchState())
@@ -605,9 +647,14 @@ private final class CaptureFiles: Sendable {
         try eventAccess.withLock { state in
             try checkWatchLocked(&state)
             do {
+                try validateBindings()
+                let finalizedLogs = try Dictionary(uniqueKeysWithValues: [outputReader, errorReader, combinedReader].map {
+                    ($0, CaptureLogFingerprint(try captureStat($0, operation: "statFinalLog")))
+                })
                 try Self.armWatch(watch: watch, root: root, directory: directory,
                                   outputReader: outputReader, errorReader: errorReader,
                                   combinedReader: combinedReader, includeWrites: includeWrites)
+                state.finalizedLogs = finalizedLogs
                 state.finalized = true
             } catch let error as NativeLogCaptureFailure {
                 state.failure = error
@@ -656,13 +703,24 @@ private final class CaptureFiles: Sendable {
             }
             guard count > 0 else { return }
             let descriptor = Int32(event.ident)
-            if !state.finalized, event.flags & UInt16(EV_ERROR) == 0,
+            if event.flags & UInt16(EV_ERROR) == 0,
                event.fflags == UInt32(NOTE_ATTRIB),
                [outputReader, errorReader, combinedReader].contains(descriptor) {
                 // Live logs receive metadata notifications even when their
-                // custody is unchanged. Validate every pinned binding before
-                // admitting one. Finalized logs reject even restored changes.
-                do { try validateBindings() }
+                // custody is unchanged. Access-time-only setattrlist also
+                // emits NOTE_ATTRIB after EOF without changing ctime. Admit
+                // that notification only while sealed non-access metadata
+                // and every pinned binding remain exact. Restored chmod
+                // changes ctime and is still a sticky publication failure.
+                do {
+                    try validateBindings()
+                    if state.finalized {
+                        let current = CaptureLogFingerprint(try captureStat(descriptor, operation: "statFinalLog"))
+                        guard state.finalizedLogs[descriptor] == current else {
+                            throw mutationFailure(event, descriptor: descriptor, detail: "sealed metadata changed")
+                        }
+                    }
+                }
                 catch {
                     let failure = (error as? NativeLogCaptureFailure)
                         ?? NativeLogCaptureFailure(operation: "captureBinding", detail: String(describing: error))
@@ -671,22 +729,41 @@ private final class CaptureFiles: Sendable {
                 }
                 continue
             }
-            let labels = [root: "capture root", directory: "capture directory",
-                          outputReader: "stdout.log", errorReader: "stderr.log", combinedReader: "combined.log"]
-            let error = NativeLogCaptureFailure(operation: "capturePathMutation", code: ESTALE,
-                                                detail: "vnode event \(event.fflags) on \(labels[descriptor] ?? "unknown descriptor")")
+            let error = mutationFailure(event, descriptor: descriptor)
             state.failure = error
             throw error
         }
+    }
+
+    private func mutationFailure(_ event: kevent, descriptor: Int32, detail: String? = nil) -> NativeLogCaptureFailure {
+        let paths = [root: rootPath, directory: artifacts.directoryPath,
+                     outputReader: path(.standardOutput), errorReader: path(.standardError), combinedReader: path(.combined)]
+        return NativeLogCaptureFailure(operation: "capturePathMutation", code: ESTALE,
+            detail: "vnode event \(event.fflags) on \(paths[descriptor] ?? "unknown descriptor")" + (detail.map { ": " + $0 } ?? ""))
+    }
+
+    // Flush the owned writers before freezing their metadata. Publication
+    // validation subsequently reads pinned descriptors without syncing writers.
+    func synchronizeLogs() throws {
+        try checkWatch()
+        try validateBindings()
+        for stream in [NativeLogStream.standardOutput, .standardError, .combined] {
+            while fsync(writeDescriptor(stream)) != 0 {
+                if errno != EINTR { throw captureFailure("syncLog", stream: stream) }
+            }
+        }
+        try checkWatch()
     }
 
     func validate(_ result: NativeLogStreamResult, stream: NativeLogStream) throws {
         try checkWatch()
         try validateBindings()
         let descriptor = readDescriptor(stream)
-        let writer = writeDescriptor(stream)
-        while fsync(writer) != 0 { if errno != EINTR { throw captureFailure("syncLog", stream: stream) } }
         let before = try captureStat(descriptor, operation: "statFinalLog")
+        let finalized = eventAccess.withLock { $0.finalizedLogs[descriptor] }
+        guard finalized == CaptureLogFingerprint(before) else {
+            throw NativeLogCaptureFailure(operation: "finalLogMutation", code: ESTALE, stream: stream)
+        }
         guard before.st_size == result.retainedBytes, before.st_size <= NativeLogCapture.maximumRawBytes else {
             throw NativeLogCaptureFailure(operation: "finalLogSize", code: ESTALE, stream: stream)
         }
@@ -703,11 +780,7 @@ private final class CaptureFiles: Sendable {
         }
         let after = try captureStat(descriptor, operation: "statFinalLog")
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        guard captureSameInode(before, after), before.st_size == after.st_size,
-              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
-              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
-              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+        guard finalized == CaptureLogFingerprint(after),
               digest == result.sha256 else {
             throw NativeLogCaptureFailure(operation: "finalLogMutation", code: ESTALE, stream: stream)
         }
