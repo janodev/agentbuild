@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum ABDiffProjectAction: String, Codable, Sendable {
@@ -35,6 +36,7 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
     public let onlyTesting: [String]
     public let device: String?
     public let cached: Bool
+    public let allowedSourceChanges: [String]
 
     public init(
         repository: String,
@@ -46,7 +48,8 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         method: String? = nil,
         onlyTesting: [String] = [],
         device: String? = nil,
-        cached: Bool = false
+        cached: Bool = false,
+        allowedSourceChanges: [String] = []
     ) throws {
         guard Self.validAbsolutePath(repository) else {
             throw ABDiffProjectError.invalidRequest("repository must be an absolute path without control characters")
@@ -128,6 +131,10 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         guard action == .generate || !cached else {
             throw ABDiffProjectError.invalidRequest("cached is supported only by generation")
         }
+        guard action != .generate || allowedSourceChanges.isEmpty else {
+            throw ABDiffProjectError.invalidRequest("allowed source changes are supported only by native build and run requests")
+        }
+        let allowedPaths = try ABDiffSourceSnapshot.validatedAllowedPaths(allowedSourceChanges)
         self.repository = repository
         self.action = action
         self.route = canonicalRoute
@@ -138,6 +145,7 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         self.onlyTesting = onlyTesting
         self.device = device
         self.cached = cached || route == "generate-cached"
+        self.allowedSourceChanges = allowedPaths
     }
 
     public var isTesting: Bool { Self.testRoutes.contains(route) }
@@ -321,7 +329,14 @@ public enum ABDiffProjectPlanner {
     }
 
     private static func canonicalRepository(_ path: String) throws -> String {
-        let canonical = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path
+        guard ABDiffProjectRequest.validAbsolutePath(path),
+              let resolved = path.withCString({ realpath($0, nil) }) else {
+            throw ABDiffProjectError.invalidRepository("cannot resolve repository directory")
+        }
+        defer { free(resolved) }
+        guard let canonical = String(validatingCString: resolved) else {
+            throw ABDiffProjectError.invalidRepository("repository path is not valid UTF-8")
+        }
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: canonical, isDirectory: &directory), directory.boolValue else {
             throw ABDiffProjectError.invalidRepository("repository directory does not exist")

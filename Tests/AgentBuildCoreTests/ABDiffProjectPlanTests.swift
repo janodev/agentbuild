@@ -1,4 +1,5 @@
 @testable import AgentBuildCore
+import Darwin
 import Foundation
 import Testing
 
@@ -142,7 +143,43 @@ struct ABDiffProjectPlanTests {
         #expect(object["repository"] as? String == fixture.path)
         #expect(object["exitCode"] == nil)
         #expect(object["status"] as? String != "succeeded")
+        let request = try #require(object["request"] as? [String: Any])
+        #expect(request["allowedSourceChanges"] as? [String] == [])
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.path).sorted() == ["Makefile", "Project.swift"])
+    }
+
+    @Test func sourceAllowancesRemainInPlanEvidenceWithoutChangingNativeInputsOrCacheCompatibility() async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        let strict = try await ABDiffProjectPlanner.plan(
+            request: ABDiffProjectRequest(repository: fixture.path, route: "build-release"),
+            environment: fixture.environment, capture: ABDiffToolCapture())
+        let paths = ["Versions/z.xcconfig", "Versions/[a] $(touch pwn).xcconfig", "Versions/z.xcconfig"]
+        let allowed = try await ABDiffProjectPlanner.plan(
+            request: ABDiffProjectRequest(repository: fixture.path, route: "build-release", allowedSourceChanges: paths),
+            environment: fixture.environment, capture: ABDiffToolCapture())
+        #expect(allowed.request.allowedSourceChanges == [paths[1], paths[0]])
+        #expect(allowed.logicalArguments == strict.logicalArguments)
+        #expect(allowed.cacheKey == strict.cacheKey)
+        let object = try #require(JSONSerialization.jsonObject(with: allowed.jsonData()) as? [String: Any])
+        let request = try #require(object["request"] as? [String: Any])
+        #expect(request["allowedSourceChanges"] as? [String] == [paths[1], paths[0]])
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/pwn"))
+    }
+
+    @Test(arguments: ["", "/tmp/version", ".", "..", "./version", "../version", "Versions/../version",
+                      "Versions/./version", "Versions//version", "Versions/", "Versions/line\nfeed", ".git/config"])
+    func malformedSourceAllowanceCannotReachPlanning(_ path: String) {
+        #expect(throws: (any Error).self) {
+            try ABDiffProjectRequest(repository: "/fixture/ABDiff", allowedSourceChanges: [path])
+        }
+    }
+
+    @Test func generationCannotUseSourceAllowances() {
+        #expect(throws: (any Error).self) {
+            try ABDiffProjectRequest(repository: "/fixture/ABDiff", action: .generate,
+                                    allowedSourceChanges: ["BuildNumber.xcconfig"])
+        }
     }
 
     @Test(arguments: ["not-a-route", "test-unit-file --file Injected", "build; touch pwn"])
@@ -181,6 +218,21 @@ struct ABDiffProjectPlanTests {
             try await ABDiffProjectPlanner.plan(request: ABDiffProjectRequest(repository: fixture.path), environment: fixture.environment, capture: capture)
         }
         #expect(await capture.arguments.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Artifacts"))
+    }
+
+    @Test func repositoryAliasesResolveToPhysicalPathsAcceptedByArtifactCustody() async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        let alias = fixture.path + "/repository-alias"
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: ".")
+        let plan = try await ABDiffProjectPlanner.plan(
+            request: ABDiffProjectRequest(repository: alias),
+            environment: fixture.environment, capture: ABDiffToolCapture())
+        #expect(plan.repository == fixture.path)
+        let retained = try RetainedArtifactDirectory(path: plan.repository)
+        defer { try? retained.close() }
+        try retained.revalidate()
         #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Artifacts"))
     }
 
@@ -270,9 +322,16 @@ struct ABDiffPlanFixture: Sendable {
     var environment: [String: String] { ["DEVELOPER_DIR": "/Fixture/Xcode/Developer", "SIMULATOR_ID": Self.simulatorID, "PATH": "/usr/bin:/bin"] }
 
     init() throws {
-        directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("agentbuild-abdiff-" + UUID().uuidString + " café $(literal) `argv`", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        guard let resolved = temporary.path.withCString({ realpath($0, nil) }) else {
+            try? FileManager.default.removeItem(at: temporary)
+            throw ABDiffProjectError.invalidRepository("cannot resolve fixture directory")
+        }
+        defer { free(resolved) }
+        directory = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
         try Data("// Isolated ABDiff manifest fixture\n".utf8).write(to: directory.appendingPathComponent("Project.swift"))
         try Data("# Isolated ABDiff Make fixture\n".utf8).write(to: directory.appendingPathComponent("Makefile"))
     }

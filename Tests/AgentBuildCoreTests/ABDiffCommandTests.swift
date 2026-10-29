@@ -13,8 +13,9 @@ struct ABDiffCommandTests {
         if command == "generate" {
             #expect(result.standardOutput.contains("--cached"))
             #expect(!result.standardOutput.contains("--only-testing"))
+            #expect(!result.standardOutput.contains("--allow-source-change"))
         } else {
-            for option in ["--route", "--platform", "--configuration", "--file", "--method", "--only-testing", "--device"] {
+            for option in ["--route", "--platform", "--configuration", "--file", "--method", "--only-testing", "--device", "--allow-source-change"] {
                 #expect(result.standardOutput.contains(option))
             }
         }
@@ -42,6 +43,29 @@ struct ABDiffCommandTests {
         #expect(FileManager.default.fileExists(atPath: fixture.path + "/tool-probes"))
     }
 
+    @Test func publicPlanningRecordsRepeatedLiteralSourceAllowancesWithoutPassingThemToXcode() async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        let bin = try abdiffFixtureTools(in: fixture)
+        let first = "Generated/BuildNumber.xcconfig"
+        let second = "Generated/[*] $(touch pwn) café.xcconfig"
+        let result = try await abdiffCLI([
+            "plan", "--repository", fixture.path, "--route", "build-release",
+            "--allow-source-change", first, "--allow-source-change", second,
+            "--allow-source-change", first,
+        ], fixtureBin: bin)
+        #expect(result.termination == .exited(0), Comment(rawValue: result.standardError))
+        let object = try #require(JSONSerialization.jsonObject(with: Data(result.standardOutput.utf8)) as? [String: Any])
+        let request = try #require(object["request"] as? [String: Any])
+        #expect(request["allowedSourceChanges"] as? [String] == [first, second])
+        let arguments = try #require(object["logicalArguments"] as? [String])
+        #expect(!arguments.contains("--allow-source-change"))
+        #expect(!arguments.contains(first) && !arguments.contains(second))
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Artifacts"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/pwn"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/unexpected-native-command"))
+    }
+
     @Test(arguments: [
         ["--route", "unsupported"],
         ["--route", "test-unit-file", "--file", "Suite", "--method", "bad\nmethod"],
@@ -49,6 +73,10 @@ struct ABDiffCommandTests {
         ["--route", "test-unit-focused", "--only-testing", "Suite//method()"],
         ["--route", "build", "--file", "Suite"],
         ["--configuration", "Unknown"],
+        ["--allow-source-change", "../BuildNumber.xcconfig"],
+        ["--allow-source-change", "/tmp/BuildNumber.xcconfig"],
+        ["--allow-source-change", "Generated//BuildNumber.xcconfig"],
+        ["--allow-source-change", ".git/config"],
     ])
     func invalidNativeOptionsFailBeforeProbingTools(_ options: [String]) async throws {
         let fixture = try ABDiffPlanFixture()
@@ -69,7 +97,8 @@ struct ABDiffCommandTests {
         let bin = try abdiffFixtureTools(in: fixture, leaseStatus: 37)
         let method = "`literal $(touch pwn) words`()"
         var arguments = ["build", "--repository", fixture.path, "--platform", platform,
-                         "--route", "test-ui-file", "--file", "SomeUITests", "--method", method]
+                         "--route", "test-ui-file", "--file", "SomeUITests", "--method", method,
+                         "--allow-source-change", "Generated/[*] $(touch pwn) version.xcconfig"]
         if platform == "ipad-simulator" { arguments += ["--device", "iPad Air 13-inch (M4)"] }
         let result = try await abdiffCLI(arguments, fixtureBin: bin)
         #expect(result.termination == .exited(37))
@@ -89,6 +118,20 @@ struct ABDiffCommandTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.path + "/unexpected-native-command"))
         #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Artifacts"))
         #expect(!FileManager.default.fileExists(atPath: fixture.path + "/pwn"))
+    }
+
+    @Test func generationDoesNotAcceptNativeSourceAllowances() async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        let bin = try abdiffFixtureTools(in: fixture)
+        let result = try await abdiffCLI([
+            "generate", "--repository", fixture.path,
+            "--allow-source-change", "BuildNumber.xcconfig",
+        ], fixtureBin: bin)
+        #expect(result.termination != .exited(0))
+        #expect(result.standardError.contains("--allow-source-change"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/tool-probes"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Artifacts"))
     }
 
     @Test func invalidRepositoryAndWaitOptionsCannotCreateExecutionArtifacts() async throws {
