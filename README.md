@@ -25,6 +25,36 @@ and combined raw logs, actual native outcomes, and source/result evidence bounda
 See the [project foundations](Docs/project-foundations.md) for ownership,
 process retirement, raw-log custody, and source/result evidence boundaries.
 
+## Why AgentBuild?
+
+When several agents develop on one Mac, their builds can regenerate the same
+Xcode project, write to the same DerivedData directory, or compete for compilation
+resources. Each run also needs enough evidence to show what executed and whether
+its tests passed.
+
+AgentLease provides atomic resource ownership. AgentBuild adds project knowledge:
+which resources a workflow needs, which native commands to run, and when ownership
+can end. Its managed project routes provide:
+
+- **Coordinated builds.** Generated projects and compatible caches stay protected
+  while in use. The account-wide `host:compile` gate coordinates compilation
+  across participating repositories. Test routes release that gate before test
+  execution, allowing another project to compile while tests run.
+- **Reusable build state.** Compatible DerivedData survives source changes so
+  Xcode can reuse incremental build outputs.
+- **Inspectable results.** Raw logs, native exit status, result bundles, and
+  executed-test counts accompany source and toolchain observations. Source drift
+  and reporting failures remain separate from actual native outcomes.
+- **Shared workflow code.** Notika and ABDiff adapters reuse ownership, process
+  supervision, and log capture while retaining their own commands and artifacts.
+
+Keeping these rules in a separately tested and installed Swift CLI lets projects
+share one implementation instead of duplicating orchestration scripts. The
+practical benefit is dependable automation and less wasted work; build speed
+benefits come from cache reuse and avoiding competing compilation.
+
+## Use
+
 ```sh
 agentbuild --help
 agentbuild --version
