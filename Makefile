@@ -1,6 +1,5 @@
 SWIFT_JOBS ?= $(shell sysctl -n hw.logicalcpu)
-INSTALL_ROOT ?= $(HOME)/.local/opt/agentbuild
-BIN_DIR ?= $(HOME)/.local/bin
+BIN_DIR ?= $(HOME)/Developer/tools
 export TEST_FILTER
 
 .PHONY: build release test install
@@ -17,4 +16,4 @@ test:
 		swift test --skip-build --no-parallel --jobs $(SWIFT_JOBS) "$$@"
 
 install: release
-	@Scripts/install-tool .build/release/agentbuild "$(INSTALL_ROOT)" "$(BIN_DIR)"
+	@Scripts/install-tool .build/release/agentbuild "$(BIN_DIR)"

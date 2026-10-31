@@ -21,6 +21,6 @@ tags: [development, agents, testing]
   reference, not a routine execution fallback.
 - For ABDiff integration, read `Docs/abdiff-workflows.md`; keep its routes and
   artifacts separate from Notika's historical cache and evidence schemas.
-- Install a copied release binary under the per-user opt directory. Never point
-  the command symlink into `.build`.
+- Install a copied release binary at `~/Developer/tools/agentbuild`. Never point
+  the installed command into `.build`.
 - Use OKF metadata for documentation, following the existing documents.

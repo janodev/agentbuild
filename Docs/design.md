@@ -59,9 +59,9 @@ An explicit `AGENTLEASE_COMPILE_HOME` must be absolute and nonempty. There is
 no fallback to a different registry when acquisition fails.
 
 Installation copies a release executable to
-`~/.local/opt/agentbuild/bin/agentbuild` and links it from `~/.local/bin`.
-Source, `.build`, and installed binary have independent lifecycles. Existing
-tools installed as flat executables under `~/Developer/tools` remain usable.
+`~/Developer/tools/agentbuild`, alongside the other installed development tools.
+It atomically replaces a regular executable without creating a command symlink.
+Source, `.build`, and installed binary have independent lifecycles.
 
 # Execution and project admission
 

@@ -170,22 +170,16 @@ tasks and native children inside their own case.
 
 ## Installation
 
-The default installation is
-`~/.local/opt/agentbuild/bin/agentbuild`, with a command symlink at
-`~/.local/bin/agentbuild`. Add `~/.local/bin` to `PATH` to use that command.
-Installation copies a release binary; it does not point into the source
-checkout's `.build` directory.
+`make install` copies the release executable to `~/Developer/tools/agentbuild`.
+Add `~/Developer/tools` to `PATH` to use the command alongside `agentlease`,
+`simlease`, and `simslim`. Set `BIN_DIR` to an absolute directory to choose
+another destination. Installation atomically replaces the copied executable;
+it does not create a symlink or depend on the source checkout's `.build` tree.
 
-The updated `0.3.0` release installation was verified: the copied executable
-matches the built release, its command link targets the opt directory, and
-the tool doctor passes. The [workflow validation record](Docs/notika-workflows.md#validation-record)
-records the tested workflows, native outcomes, and evidence limits.
-
-This per-user `opt` layout keeps the installed tool separate from source and
-build products. The source checkout can remain at
-`~/Developer/code/janodev/agentbuild`. Existing flat executable installations
-such as `~/Developer/tools/agentlease` also work; `opt` is an installation
-convention, not a requirement for other tools.
+The copied executable matches the built release and the tool doctor passes.
+The [workflow validation record](Docs/notika-workflows.md#validation-record)
+records the tested workflows, native outcomes, and evidence limits. Source,
+build products, and the installed executable have independent lifecycles.
 
 See the [documentation index](Docs/index.md) and [design contract](Docs/design.md)
 for ownership, evidence, and project-adapter boundaries. Implemented route

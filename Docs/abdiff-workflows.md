@@ -25,7 +25,7 @@ leases, creating cache/session directories, building, or operating a device.
 Planning observations are sequential and confer no execution ownership.
 
 ABDiff's `Scripts/abdiff-dev` forwards literal arguments to the copied release
-installed at `~/.local/opt/agentbuild/bin/agentbuild`. An explicit absolute
+installed at `~/Developer/tools/agentbuild`. An explicit absolute
 `AGENTBUILD_EXECUTABLE` can select a reviewed candidate for validation. The wrapper
 does not compile a missing tool or select an arbitrary executable from PATH.
 Its root-owned Make overlay routes routine native work through this adapter and

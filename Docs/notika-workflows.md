@@ -34,7 +34,7 @@ and independent helper contracts.
 
 `AGENTBUILD_EXECUTABLE` can select an absolute reviewed executable while testing
 a new release. Normally the wrapper uses
-`~/.local/opt/agentbuild/bin/agentbuild`. It never bootstraps a tool build or
+`~/Developer/tools/agentbuild`. It never bootstraps a tool build or
 falls back to the old controller when that binary is absent.
 
 Use Notika's Make shortcuts for routine work:
@@ -183,7 +183,8 @@ initially published under Notika's `Artifacts/AgentSessions/`.
 | `1DE6E295-A2C2-4870-9A8A-F1AED47E594A` | LiteParse Rust tests: native exit 0, 6/6 passed |
 | `1A3A73EF-C846-495B-BF69-02565BDDBBA9` | Regeneration after merging BugFixing's MDVault update: all five native phases exited 0; publication admitted |
 
-The updated release installation passed with version `0.3.0` at
+The original release installation, before migration to `~/Developer/tools`,
+passed with version `0.3.0` at
 `~/.local/opt/agentbuild/bin/agentbuild`; its command link and tool doctor passed.
 The installed regular executable has mode `0755` and matches the built release
 SHA-256 `946f73461a4cbb6aec5bdc611a270023c0bdf3af7faf04750e4325f7dd99afc7`.
