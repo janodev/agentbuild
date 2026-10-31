@@ -98,6 +98,43 @@ selected generated graph and dependency-lock files. They do not snapshot the
 contents of sibling local packages or already-dirty submodule worktrees. A stable
 worktree observation does not establish that every dependency remained unchanged.
 
+Native `plan`, `build`, and `run` accept a repeatable `--allow-source-change`
+option for an intentional file-content change during execution. For example, a
+project that keeps its generated build number in a dedicated configuration file
+can declare:
+
+```sh
+agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-release \
+  --allow-source-change Sources/ABDiff/Configuration/BuildNumber.xcconfig
+```
+
+Each value is one exact repository-relative file path. Wildcard and Git pathspec
+characters are literal filename characters; directories, absolute paths, dot or
+parent components, and Git metadata paths are rejected. Git observation-policy
+files (`.gitignore`, `.gitattributes`, and `.gitmodules`) are also rejected at any
+directory depth, including case aliases, because changing them can hide changes
+to other files. The allowed file must exist as a regular file before and after
+execution, without symlinks in its relative path.
+Generation keeps its existing source-change behavior and does not accept this
+option. With no allowances, native source-drift checking remains strict.
+
+The request and read-only plan record `allowedSourceChanges`. The execution report
+keeps the complete `sourceBefore` and `sourceAfter` observations and factual
+`sourceDrift` flag. It also records `sourceComparisonBefore`,
+`sourceComparisonAfter`, and `unexpectedSourceDrift` for the comparison that
+accounts for the declared files. Each entry in the report's `allowedSourceChanges`
+contains `path`, `beforeSHA256`, `afterSHA256`, and `changed`; unavailable evidence
+is not represented as an unchanged file. A successful native outcome may become a
+successful session when only declared file contents changed. Unexpected source
+changes and missing or invalid evidence still prevent success.
+
+An allowance changes only the verification decision. The file remains a normal
+build input, and the report does not claim which version of a changing file the
+compiler consumed. Prefer isolating generated values in a dedicated file: allowing
+all of `macOS.xcconfig` would also permit changes to deployment and other build
+settings. The option does not validate a particular build-number increment or
+interpret configuration-file syntax.
+
 ABDiff currently retains sessions and compatible caches until explicit manual
 maintenance. It does not apply Notika's automatic daily collection. Retire a
 session or cache only when inactive and while holding the corresponding exclusive

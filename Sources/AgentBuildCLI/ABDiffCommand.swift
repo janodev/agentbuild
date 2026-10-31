@@ -65,11 +65,14 @@ private struct ABDiffNativeOptions: ParsableArguments {
     @Option(help: "iPad Simulator model, or explicit hardware UDID for ipad-device.")
     var device: String?
 
+    @Option(name: .customLong("allow-source-change"), help: "Allow content changes to an exact repository-relative regular file; repeat for additional files. Changes remain recorded in the report.")
+    var allowedSourceChanges: [String] = []
+
     func request(repository: String, action: ABDiffProjectAction) throws -> ABDiffProjectRequest {
         do {
             return try ABDiffProjectRequest(repository: repository, action: action, route: route,
                 platform: platform, configuration: buildConfiguration, file: file, method: method,
-                onlyTesting: onlyTesting, device: device)
+                onlyTesting: onlyTesting, device: device, allowedSourceChanges: allowedSourceChanges)
         } catch { throw ValidationError(String(describing: error)) }
     }
 }
@@ -190,8 +193,8 @@ private func executeABDiff(_ request: ABDiffProjectRequest, common: ABDiffCommon
         if let path = result.sessionPath { print("Session: \(path)") }
         if let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let path = fields["productPath"] as? String { print("Product: \(path)") }
-            if result.exitCode != 0, fields["sourceDrift"] as? Bool == true {
-                abdiffWriteError("Source observations changed during this run; see the session manifest.")
+            if result.exitCode != 0, fields["unexpectedSourceDrift"] as? Bool == true {
+                abdiffWriteError("Unexpected source changes observed during this run; see the session manifest.")
             }
             if fields["toolDrift"] as? Bool == true {
                 abdiffWriteError("Toolchain observations changed during this run; see the session manifest.")

@@ -1,5 +1,4 @@
 import AgentLeaseCore
-import CryptoKit
 import Darwin
 import Foundation
 import Synchronization
@@ -64,7 +63,8 @@ public struct ABDiffProjectDriver: Sendable {
             }
             let state = ABDiffDriverState(plan: admitted, runID: runID, sessionPath: ownership.session.path)
             do {
-                let before = try await abdiffSourceSnapshot(admitted.repository, environment: executionEnvironment)
+                let before = try await ABDiffSourceSnapshot.capture(repository: admitted.repository,
+                    allowedPaths: request.allowedSourceChanges, environment: executionEnvironment)
                 state.value.withLock { $0.sourceBefore = before }
                 try publish(state: state, ownership: ownership, lifecycle: "inProgress", name: "in-progress.json")
                 let childEnvironment = abdiffChildEnvironment(executionEnvironment, plan: admitted)
@@ -137,12 +137,14 @@ public struct ABDiffProjectDriver: Sendable {
                             environment: childEnvironment, admissionEnvironment: executionEnvironment, waitSeconds: waitSeconds)
                     }
                 }
-                let after = try await abdiffSourceSnapshot(admitted.repository, environment: executionEnvironment)
+                let after = try await ABDiffSourceSnapshot.capture(repository: admitted.repository,
+                    allowedPaths: request.allowedSourceChanges, environment: executionEnvironment)
                 let closing = try await plan(request: request, environment: executionEnvironment)
                 let complete = state.succeededSoFar
                 state.value.withLock {
                     $0.sourceAfter = after
-                    $0.sourceDrift = $0.sourceBefore != after
+                    $0.sourceDrift = before.raw != after.raw
+                    $0.unexpectedSourceDrift = before.comparison != after.comparison
                     $0.toolDrift = admitted.cacheKey != closing.cacheKey
                     $0.executionComplete = complete
                 }
@@ -342,6 +344,10 @@ private struct ABDiffSessionReport: Encodable, Sendable {
     let sourceBefore: [String: String]?
     let sourceAfter: [String: String]?
     let sourceDrift: Bool
+    let sourceComparisonBefore: [String: String]?
+    let sourceComparisonAfter: [String: String]?
+    let unexpectedSourceDrift: Bool
+    let allowedSourceChanges: [ABDiffAllowedSourceChange]
     let toolIdentity: [String: String]
     let generationTool: [String: String]?
     let toolDrift: Bool
@@ -356,13 +362,33 @@ private struct ABDiffSessionReport: Encodable, Sendable {
     let retention = "Manual retention; no automatic deletion. Retire only inactive ABDiff sessions/caches while owning their exclusive namespace leases."
 }
 
+/// A declared exception changes the verdict, while its observed bytes remain evidence.
+private struct ABDiffAllowedSourceChange: Encodable, Sendable {
+    let path: String
+    let beforeSHA256: String?
+    let afterSHA256: String?
+    let changed: Bool?
+
+    init(path: String, before: ABDiffSourceSnapshot?, after: ABDiffSourceSnapshot?) {
+        self.path = path
+        beforeSHA256 = before?.allowedFileHashes[path]
+        afterSHA256 = after?.allowedFileHashes[path]
+        if let beforeSHA256, let afterSHA256 {
+            changed = beforeSHA256 != afterSHA256
+        } else {
+            changed = nil
+        }
+    }
+}
+
 private final class ABDiffDriverState: Sendable {
     struct State {
         var captures: [CapturedNativePhase] = []
         var phases: [ABDiffPhaseReport] = []
-        var sourceBefore: [String: String]?
-        var sourceAfter: [String: String]?
+        var sourceBefore: ABDiffSourceSnapshot?
+        var sourceAfter: ABDiffSourceSnapshot?
         var sourceDrift = false
+        var unexpectedSourceDrift = false
         var toolDrift = false
         var generationTool: [String: String]?
         var executionComplete = false
@@ -404,7 +430,7 @@ private final class ABDiffDriverState: Sendable {
             else if let failure { status = "failed"; code = abdiffNativeCode(failure) }
             else if state.cancelled { status = "cancelled"; code = 130 }
             else if !state.failures.isEmpty || !state.publicationFailures.isEmpty
-                || (state.sourceDrift && plan.request.action != .generate) || state.toolDrift || !state.executionComplete {
+                || (state.unexpectedSourceDrift && plan.request.action != .generate) || state.toolDrift || !state.executionComplete {
                 status = "inconclusive"; code = 70
             } else { status = "succeeded"; code = 0 }
             return try ABDiffProjectResult(report: ABDiffSessionReport(
@@ -413,7 +439,12 @@ private final class ABDiffDriverState: Sendable {
                 cacheDirectory: plan.cacheDirectory, cacheKey: plan.cacheKey,
                 lifecycle: lifecycle, status: status, exitCode: code, nativeTermination: native,
                 cancelled: state.cancelled, executionComplete: state.executionComplete,
-                sourceBefore: state.sourceBefore, sourceAfter: state.sourceAfter, sourceDrift: state.sourceDrift,
+                sourceBefore: state.sourceBefore?.raw, sourceAfter: state.sourceAfter?.raw, sourceDrift: state.sourceDrift,
+                sourceComparisonBefore: state.sourceBefore?.comparison, sourceComparisonAfter: state.sourceAfter?.comparison,
+                unexpectedSourceDrift: state.unexpectedSourceDrift,
+                allowedSourceChanges: plan.request.allowedSourceChanges.map {
+                    ABDiffAllowedSourceChange(path: $0, before: state.sourceBefore, after: state.sourceAfter)
+                },
                 toolIdentity: plan.toolIdentity, generationTool: state.generationTool, toolDrift: state.toolDrift,
                 startedAt: startedAt, completedAt: lifecycle == "terminal" ? RunRecord.timestamp() : nil,
                 phases: state.phases, tests: state.tests, resultBundleSHA256: state.resultCommitment,
@@ -473,61 +504,4 @@ private func abdiffChildEnvironment(_ environment: [String: String], plan: ABDif
         child["TEST_RUNNER_ABDIFF_UITEST_SAFE_MODE"] = "1"
     }
     return child
-}
-
-private func abdiffSourceSnapshot(_ repository: String, environment: [String: String]) async throws -> [String: String] {
-    let capture = try RepositoryCommandCapture()
-    var snapshot: [String: String] = [:]
-    for (name, arguments) in [
-        ("head", ["git", "rev-parse", "HEAD"]),
-        ("status", ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"]),
-        ("diff", ["git", "diff", "--binary", "--no-ext-diff", "HEAD"]),
-        ("submodules", ["git", "submodule", "status", "--recursive"]),
-    ] {
-        snapshot[name] = CanonicalJSONDigest.digest(try await capture.capture(
-            arguments: arguments, workingDirectory: repository, environment: environment))
-    }
-    let untracked = try await capture.capture(arguments: ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-        workingDirectory: repository, environment: environment)
-    var files: [CanonicalJSONValue] = []
-    for raw in untracked.split(separator: 0) {
-        guard let name = String(bytes: raw, encoding: .utf8), !name.hasPrefix("/"),
-              !name.split(separator: "/").contains("..") else { throw ABDiffProjectDriverError.evidence("invalid Git path") }
-        files.append(.object(["path": .string(name), "sha256": .string(try abdiffFileDigest(repository + "/" + name))]))
-    }
-    snapshot["untracked"] = try CanonicalJSONDigest.sha256(.array(files))
-    for name in ["ABDiff.xcodeproj/project.pbxproj", "ABDiff.xcworkspace/contents.xcworkspacedata", "Project.swift", "Tuist/Package.resolved", ".package.resolved"] {
-        if FileManager.default.fileExists(atPath: repository + "/" + name) {
-            snapshot[name] = try abdiffFileDigest(repository + "/" + name)
-        }
-    }
-    return snapshot
-}
-
-private func abdiffFileDigest(_ path: String) throws -> String {
-    let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-    guard descriptor >= 3 else { throw ABDiffProjectDriverError.io("open source input", errno) }
-    defer { _ = close(descriptor) }
-    var before = stat()
-    guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-          before.st_size >= 0 else { throw ABDiffProjectDriverError.evidence("nonregular source input: " + path) }
-    var digest = SHA256(), buffer = [UInt8](repeating: 0, count: 64 * 1_024)
-    while true {
-        let count = read(descriptor, &buffer, buffer.count)
-        if count < 0, errno == EINTR { continue }
-        guard count >= 0 else { throw ABDiffProjectDriverError.io("read source input", errno) }
-        if count == 0 { break }
-        digest.update(data: Data(buffer.prefix(count)))
-    }
-    var after = stat(), named = stat()
-    guard fstat(descriptor, &after) == 0, lstat(path, &named) == 0,
-          before.st_dev == after.st_dev, before.st_ino == after.st_ino,
-          after.st_dev == named.st_dev, after.st_ino == named.st_ino,
-          before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-          before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
-          before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
-          before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
-        throw ABDiffProjectDriverError.changedInput(path)
-    }
-    return digest.finalize().map { String(format: "%02x", $0) }.joined()
 }
