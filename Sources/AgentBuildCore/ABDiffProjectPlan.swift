@@ -1,7 +1,8 @@
+import Darwin
 import Foundation
 
 public enum ABDiffProjectAction: String, Codable, Sendable {
-    case build, generate, run
+    case build, generate, run, install
 }
 
 public enum ABDiffProjectError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -55,6 +56,7 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         switch platform.lowercased() {
         case "macos": canonicalPlatform = "macos"
         case "ios", "ipad", "ipad-simulator", "uikit": canonicalPlatform = "ipad-simulator"
+        case "ipad-device": canonicalPlatform = "ipad-device"
         default: throw ABDiffProjectError.invalidRequest("unsupported platform \(platform)")
         }
         let selectedPlatform = Self.platformOverrides[route] ?? canonicalPlatform
@@ -80,6 +82,15 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         }
         if canonicalRoute == "test-transport", selectedPlatform != "macos" {
             throw ABDiffProjectError.invalidRequest("test-transport supports macos only")
+        }
+        if selectedPlatform == "ipad-device" {
+            guard [.build, .install].contains(action),
+                  ["build", "build-release"].contains(canonicalRoute),
+                  let device, Self.validPhysicalDeviceID(device) else {
+                throw ABDiffProjectError.invalidRequest("ipad-device supports build/install only and requires an explicit hardware UDID in --device")
+            }
+        } else if action == .install {
+            throw ABDiffProjectError.invalidRequest("install requires platform ipad-device")
         }
         let testing = Self.testRoutes.contains(canonicalRoute)
         let resolvedConfiguration = configuration ?? (canonicalRoute == "build-release" ? "Release"
@@ -121,8 +132,9 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
             }
         }
         if let device {
-            guard selectedPlatform == "ipad-simulator", !device.isEmpty, Self.validText(device), !device.hasPrefix("-") else {
-                throw ABDiffProjectError.invalidRequest("device must be an iPad simulator model name")
+            guard selectedPlatform == "ipad-device" ||
+                    (selectedPlatform == "ipad-simulator" && !device.isEmpty && Self.validText(device) && !device.hasPrefix("-")) else {
+                throw ABDiffProjectError.invalidRequest("device must be an iPad simulator model name or a physical iPad UDID")
             }
         }
         guard action == .generate || !cached else {
@@ -136,11 +148,18 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
         self.file = file
         self.method = method
         self.onlyTesting = onlyTesting
-        self.device = device
+        self.device = selectedPlatform == "ipad-device" ? device?.uppercased() : device
         self.cached = cached || route == "generate-cached"
     }
 
     public var isTesting: Bool { Self.testRoutes.contains(route) }
+
+    public var isIPad: Bool { platform == "ipad-simulator" || platform == "ipad-device" }
+
+    private static func validPhysicalDeviceID(_ value: String) -> Bool {
+        guard let match = value.range(of: "^(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}|[0-9A-Fa-f]{40})$", options: .regularExpression) else { return false }
+        return match == (value.startIndex ..< value.endIndex)
+    }
 
     /// Broad routes include UI tests. Unit-only routes do not acquire desktop UI.
     public var requiresMacUI: Bool {
@@ -169,6 +188,7 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
     private static let aliases: [String: String] = [
         "build-xcode": "build", "build-ios": "build", "build-uikit": "build", "build-macos": "build",
         "build-release-ios": "build-release", "build-release-macos": "build-release",
+        "build-ipad-device": "build", "build-release-ipad-device": "build-release",
         "test-xcode": "test", "test-ios": "test", "test-uikit": "test", "test-macos": "test",
         "unit-test": "test-unit", "unit-test-xcode": "test-unit",
         "test-unit-ios": "test-unit", "test-unit-macos": "test-unit", "test-xcode-file": "test-unit-file",
@@ -177,6 +197,7 @@ public struct ABDiffProjectRequest: Encodable, Sendable {
     ]
 
     private static let platformOverrides: [String: String] = [
+        "build-ipad-device": "ipad-device", "build-release-ipad-device": "ipad-device",
         "build-ios": "ipad-simulator", "build-uikit": "ipad-simulator", "build-release-ios": "ipad-simulator",
         "test-ios": "ipad-simulator", "test-uikit": "ipad-simulator", "test-unit-ios": "ipad-simulator",
         "test-ui-ios": "ipad-simulator", "run-ios": "ipad-simulator", "run-uikit": "ipad-simulator",
@@ -273,7 +294,7 @@ public enum ABDiffProjectPlanner {
         let unit = request.route.hasPrefix("test-unit")
         let scheme = request.route == "cli-build" ? "ABDiffCLI"
             : request.route == "test-transport" ? "ABDiffMergetoolTests"
-            : request.platform == "ipad-simulator" ? "ABDiffIPad" : unit ? "ABDiffTests" : "ABDiff"
+            : request.isIPad ? "ABDiffIPad" : unit ? "ABDiffTests" : "ABDiff"
         let key = try CanonicalJSONDigest.sha256(.object([
             "schemaVersion": .integer(1), "repository": .string(repository), "platform": .string(request.platform),
             "scheme": .string(scheme), "configuration": .string(request.configuration),
@@ -284,9 +305,9 @@ public enum ABDiffProjectPlanner {
         let destination = try destination(request: request, environment: environment)
         let generatedPaths = [repository + "/ABDiff.xcodeproj", workspace]
         let products = cacheDirectory + "/Build/Products/" + request.configuration
-            + (request.platform == "ipad-simulator" ? "-iphonesimulator" : "")
+            + (request.platform == "ipad-simulator" ? "-iphonesimulator" : request.platform == "ipad-device" ? "-iphoneos" : "")
         let product = products + (request.route == "cli-build" ? "/abd"
-            : request.route == "docbuild" ? "/\(scheme).doccarchive" : "/\(request.platform == "ipad-simulator" ? "ABDiffIPad" : "ABDiff").app")
+            : request.route == "docbuild" ? "/\(scheme).doccarchive" : "/\(request.isIPad ? "ABDiffIPad" : "ABDiff").app")
         let arguments: [String]
         let xcodePlan: XcodeExecutionPlan?
         if request.action == .generate {
@@ -297,7 +318,7 @@ public enum ABDiffProjectPlanner {
                           request.isTesting ? "test" : request.route == "docbuild" ? "docbuild" : "build",
                           "-workspace", workspace, "-scheme", scheme, "-configuration", request.configuration,
                           "-destination", destination, "SDKROOT=\(identity["sdkPath"]!)"]
-            if request.platform == "macos" { native.append("-allowProvisioningUpdates") }
+            if request.platform != "ipad-simulator" { native.append("-allowProvisioningUpdates") }
             if request.isTesting {
                 let resultBundle = environment["AGENTBUILD_ABDIFF_RESULT_BUNDLE"]
                     ?? repository + "/Artifacts/AgentSessions/PLAN/Tests.xcresult"
@@ -321,7 +342,11 @@ public enum ABDiffProjectPlanner {
     }
 
     private static func canonicalRepository(_ path: String) throws -> String {
-        let canonical = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path
+        guard let resolved = realpath(path, nil) else {
+            throw ABDiffProjectError.invalidRepository("repository directory does not exist")
+        }
+        defer { free(resolved) }
+        let canonical = String(cString: resolved)
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: canonical, isDirectory: &directory), directory.boolValue else {
             throw ABDiffProjectError.invalidRepository("repository directory does not exist")
@@ -336,6 +361,9 @@ public enum ABDiffProjectPlanner {
     }
 
     private static func destination(request: ABDiffProjectRequest, environment: [String: String]) throws -> String {
+        if request.platform == "ipad-device", let device = request.device {
+            return "platform=iOS,id=" + device
+        }
         guard request.platform == "ipad-simulator" else { return "platform=macOS" }
         guard request.isTesting || request.action == .run else { return "generic/platform=iOS Simulator" }
         guard let identifier = environment["SIMULATOR_ID"], !identifier.isEmpty else {
@@ -403,7 +431,7 @@ public enum ABDiffProjectPlanner {
         let swift = try await observe(["xcrun", "--find", "swift"], path: true)
         let xcodeVersion = try await observe([xcodebuild, "-version"])
         let swiftVersion = try await observe([swift, "--version"])
-        let sdk = platform == "macos" ? "macosx" : "iphonesimulator"
+        let sdk = platform == "macos" ? "macosx" : platform == "ipad-device" ? "iphoneos" : "iphonesimulator"
         let sdkPath = try await observe(["xcrun", "--sdk", sdk, "--show-sdk-path"], path: true)
         let sdkVersion = try await observe(["xcrun", "--sdk", sdk, "--show-sdk-version"])
         var identity = [

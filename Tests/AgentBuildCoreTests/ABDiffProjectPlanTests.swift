@@ -1,9 +1,58 @@
 @testable import AgentBuildCore
+import Darwin
 import Foundation
 import Testing
 
 @Suite("ABDiff native command planning")
 struct ABDiffProjectPlanTests {
+    @Test func physicalIPadUsesSignedDeviceSDKAndSeparateCache() async throws {
+        let fixture = try ABDiffPlanFixture()
+        defer { fixture.remove() }
+        let device = "00008027-000d05610130402e"
+        let request = try ABDiffProjectRequest(repository: fixture.path, route: "build-ipad-device", device: device)
+        let plan = try await ABDiffProjectPlanner.plan(request: request, environment: fixture.environment, capture: ABDiffToolCapture())
+        let simulator = try await ABDiffProjectPlanner.plan(
+            request: ABDiffProjectRequest(repository: fixture.path, platform: "ipad-simulator"),
+            environment: fixture.environment, capture: ABDiffToolCapture())
+        #expect(plan.request.device == device.uppercased())
+        #expect(plan.scheme == "ABDiffIPad")
+        #expect(plan.toolIdentity["sdk"] == "iphoneos")
+        #expect(plan.destination == "platform=iOS,id=" + device.uppercased())
+        #expect(plan.productPath.hasSuffix("/Debug-iphoneos/ABDiffIPad.app"))
+        #expect(plan.logicalArguments.contains("-allowProvisioningUpdates"))
+        #expect(plan.cacheKey != simulator.cacheKey)
+        #expect(!plan.needsOuterLease)
+        #expect(!plan.requiresMacUI)
+        try ABDiffLeaseBoundary.admit(request: request, environment: [:])
+        #expect(!FileManager.default.fileExists(atPath: fixture.path + "/Artifacts"))
+    }
+
+    @Test(arguments: ["", "Alejandro’s iPad", "-all", "00008027-000D05610130402E\n", "$(touch pwn)"])
+    func physicalDevicesRequireAnExactHardwareIdentifier(_ device: String) {
+        #expect(throws: (any Error).self) {
+            try ABDiffProjectRequest(repository: "/fixture/ABDiff", platform: "ipad-device", device: device)
+        }
+    }
+
+    @Test func physicalDeviceLifecycleRejectsMissingTargetsAndUnsupportedActions() {
+        #expect(throws: (any Error).self) {
+            try ABDiffProjectRequest(repository: "/fixture/ABDiff", platform: "ipad-device")
+        }
+        #expect(throws: (any Error).self) {
+            try ABDiffProjectRequest(repository: "/fixture/ABDiff", action: .install, platform: "ipad-simulator")
+        }
+        for action in [ABDiffProjectAction.run, .generate] {
+            #expect(throws: (any Error).self) {
+                try ABDiffProjectRequest(repository: "/fixture/ABDiff", action: action, platform: "ipad-device", device: "00008027-000D05610130402E")
+            }
+        }
+        for route in ["test-unit", "test-ui", "docbuild"] {
+            #expect(throws: (any Error).self) {
+                try ABDiffProjectRequest(repository: "/fixture/ABDiff", route: route, platform: "ipad-device", device: "00008027-000D05610130402E")
+            }
+        }
+    }
+
     @Test(arguments: ABDiffPlanCase.all)
     func projectRoutesSelectRealSchemesAndTestTargets(_ scenario: ABDiffPlanCase) async throws {
         let fixture = try ABDiffPlanFixture()
@@ -269,10 +318,13 @@ struct ABDiffPlanFixture: Sendable {
     var path: String { directory.path }
     var environment: [String: String] { ["DEVELOPER_DIR": "/Fixture/Xcode/Developer", "SIMULATOR_ID": Self.simulatorID, "PATH": "/usr/bin:/bin"] }
 
-    init() throws {
-        directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
-            .appendingPathComponent("agentbuild-abdiff-" + UUID().uuidString + " café $(literal) `argv`", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    init(literalPath: Bool = true) throws {
+        let proposed = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentbuild-abdiff-" + UUID().uuidString + (literalPath ? " café $(literal) `argv`" : ""), isDirectory: true)
+        try FileManager.default.createDirectory(at: proposed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let canonical = try #require(realpath(proposed.path, nil))
+        defer { free(canonical) }
+        directory = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
         try Data("// Isolated ABDiff manifest fixture\n".utf8).write(to: directory.appendingPathComponent("Project.swift"))
         try Data("# Isolated ABDiff Make fixture\n".utf8).write(to: directory.appendingPathComponent("Makefile"))
     }
@@ -294,7 +346,8 @@ actor ABDiffToolCapture: RepositoryCommandCapturing {
         case ["/Fixture/Xcode/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift", "--version"]: value = "Apple Swift version 6.4"
         case ["xcrun", "--sdk", "macosx", "--show-sdk-path"]: value = "/Fixture/Xcode/Developer/SDKs/MacOSX27.sdk"
         case ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"]: value = "/Fixture/Xcode/Developer/SDKs/iPhoneSimulator27.sdk"
-        case ["xcrun", "--sdk", "macosx", "--show-sdk-version"], ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"]: value = "27.0"
+        case ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"]: value = "/Fixture/Xcode/Developer/SDKs/iPhoneOS27.sdk"
+        case ["xcrun", "--sdk", "macosx", "--show-sdk-version"], ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], ["xcrun", "--sdk", "iphoneos", "--show-sdk-version"]: value = "27.0"
         default: throw ABDiffFixtureError.unexpectedProbe(arguments)
         }
         return Data((value + "\n").utf8)

@@ -12,6 +12,8 @@ agentbuild abdiff plan --repository /absolute/path/to/ABDiff --route build --jso
 agentbuild abdiff generate --repository /absolute/path/to/ABDiff
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-macos
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-ios
+agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-ipad-device --device <hardware-UDID>
+agentbuild abdiff install --repository /absolute/path/to/ABDiff --platform ipad-device --device <hardware-UDID>
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route test-unit-file --file ApplePropertyListInspectionTests
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route test-ui-file --file AppleInspectionUITests --method testIPAPackagesShowApplicationVersionsAndEmbeddedPrivacy
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route test-unit-file --platform ipad-simulator --file IPadHexDiffViewportTests
@@ -55,6 +57,18 @@ A failed build skips runtime. Native exit/signal observations, cancellation,
 source drift, and evidence failures retain separate meanings.
 
 # Ownership and device boundaries
+
+Physical iPad builds use `--platform ipad-device` (or `--route build-ipad-device`)
+and require an explicit hardware UDID in `--device`. The device SDK, signing
+flags, and `-iphoneos` product directory are distinct from Simulator builds and
+their cache identities. These requests currently support build and install;
+physical-device tests and supervised `run` reject before native execution.
+`install` builds, installs that exact successful product with `devicectl`, then
+launches the bundle identifier read from its built Info.plist and returns with
+the app open. Failure skips all later steps. Deployment runs outside the host
+compilation gate, while retaining project, cache, and exclusive physical-device
+ownership. Device workflows retain native outcomes, raw logs, and device command
+JSON in the session; they never create a simulator or alter user defaults.
 
 Native work owns its session writer, generated graph, cache namespace, and
 selected cache before entering compilation admission. Generation owns the graph

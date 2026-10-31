@@ -33,7 +33,9 @@ The separate [ABDiff adapter](abdiff-workflows.md) uses the shared compilation,
 native supervision, and raw-capture primitives with explicit ABDiff schemes,
 test configurations, and artifact identities. Its Make entry points forward
 literal arguments to `agentbuild abdiff`; they do not enter Notika's route or
-cache contracts. ABDiff's device workflows use stock SimLease simulators.
+cache contracts. ABDiff's Simulator workflows use stock SimLease simulators;
+physical iPad build/install workflows require an exact hardware UDID and own
+that device through deployment without a Simulator or desktop lease.
 
 Doctor exits `0` only when all three required probes succeed, and `1` otherwise.
 JSON output has `schemaVersion: 1`, `toolVersion: 0.3.0`, `stage: bootstrap`,

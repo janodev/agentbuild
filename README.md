@@ -151,6 +151,7 @@ is pinned to a reviewed Git revision.
 make build
 make release
 make test
+make test TEST_FILTER=ABDiff
 make install
 ```
 

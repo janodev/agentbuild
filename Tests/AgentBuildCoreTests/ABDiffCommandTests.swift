@@ -4,7 +4,7 @@ import Testing
 
 @Suite("ABDiff public CLI contract")
 struct ABDiffCommandTests {
-    @Test(arguments: ["plan", "build", "generate", "run"])
+    @Test(arguments: ["plan", "build", "generate", "run", "install"])
     func helpExposesTheSupportedPublicOptions(_ command: String) async throws {
         let result = try await abdiffCLI([command, "--help"])
         #expect(result.termination == .exited(0))
@@ -49,6 +49,8 @@ struct ABDiffCommandTests {
         ["--route", "test-unit-focused", "--only-testing", "Suite//method()"],
         ["--route", "build", "--file", "Suite"],
         ["--configuration", "Unknown"],
+        ["--platform", "ipad-device"],
+        ["--platform", "ipad-device", "--device", "Alejandro’s iPad"],
     ])
     func invalidNativeOptionsFailBeforeProbingTools(_ options: [String]) async throws {
         let fixture = try ABDiffPlanFixture()
@@ -104,6 +106,44 @@ struct ABDiffCommandTests {
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.path).sorted() == ["Makefile", "Project.swift"])
     }
+
+    @Test(arguments: ["build", "install", "launch", "none"])
+    func physicalDeploymentStopsAtTheFailedNativeStep(_ failedStep: String) async throws {
+        let fixture = try ABDiffPlanFixture(literalPath: false)
+        defer { fixture.remove() }
+        let bin = try abdiffFixtureTools(in: fixture)
+        try FileManager.default.createDirectory(atPath: fixture.path + "/ABDiff.xcworkspace", withIntermediateDirectories: false)
+        try writeABDiffDeploymentTools(bin: bin, failedStep: failedStep)
+        let device = "00000000-0000000000000000"
+        let result = try await abdiffCLI([
+            "install", "--repository", fixture.path, "--platform", "ipad-device", "--device", device,
+            "--lease-home", fixture.path + "/leases", "--json",
+        ], fixtureBin: bin)
+        #expect(result.termination == .exited(failedStep == "none" ? 0 : 37), Comment(rawValue: result.standardError))
+        let steps = try String(contentsOfFile: fixture.path + "/native-steps", encoding: .utf8).split(separator: "\n").map(String.init)
+        let expected = failedStep == "build" ? ["build"] : failedStep == "install" ? ["build", "install"] : ["build", "install", "launch"]
+        #expect(steps == expected)
+        let report = try #require(JSONSerialization.jsonObject(with: Data(result.standardOutput.utf8)) as? [String: Any])
+        #expect(report["status"] as? String == (failedStep == "none" ? "succeeded" : "failed"))
+        let phases = try #require(report["phases"] as? [[String: Any]])
+        #expect(phases.count == expected.count)
+        for phase in phases.dropFirst() {
+            #expect(phase["compilation"] as? Bool == false)
+            let arguments = try #require(phase["arguments"] as? [String])
+            let target = try #require(arguments.firstIndex(of: "--device"))
+            #expect(arguments[target + 1] == device)
+            #expect(!arguments.contains("simctl"))
+        }
+        if phases.count > 1 {
+            let arguments = try #require(phases[1]["arguments"] as? [String])
+            #expect(arguments.contains(try #require(report["productPath"] as? String)))
+        }
+        if phases.count > 2 {
+            let arguments = try #require(phases[2]["arguments"] as? [String])
+            #expect(arguments.contains("fixture.abdiff.from-built-product"))
+            #expect(!arguments.contains("--console"))
+        }
+    }
 }
 
 private func abdiffCLI(_ arguments: [String], fixtureBin: String? = nil) async throws -> CommandResult {
@@ -112,7 +152,8 @@ private func abdiffCLI(_ arguments: [String], fixtureBin: String? = nil) async t
     let fixtureRoot = fixtureBin.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
     var environmentArguments = ["-i", "PATH=" + (fixtureBin.map { $0 + ":/usr/bin:/bin" } ?? "/__agentbuild_abdiff_no_tools__"), "DEVELOPER_DIR=/Fixture/Xcode/Developer"]
     if let fixtureBin {
-        environmentArguments += ["ABDIFF_FIXTURE_BIN=" + fixtureBin, "ABDIFF_FIXTURE_ROOT=" + URL(fileURLWithPath: fixtureBin).deletingLastPathComponent().path]
+        environmentArguments += ["ABDIFF_FIXTURE_BIN=" + fixtureBin, "ABDIFF_FIXTURE_ROOT=" + URL(fileURLWithPath: fixtureBin).deletingLastPathComponent().path,
+                                 "AGENTLEASE_COMPILE_HOME=" + URL(fileURLWithPath: fixtureBin).deletingLastPathComponent().path + "/compile-leases"]
     }
     return try await CommandRunner(outputLimit: 128 * 1_024).run(
         executable: "/usr/bin/env", arguments: environmentArguments + [executable, "abdiff"] + arguments,
@@ -131,6 +172,8 @@ private func abdiffFixtureTools(in fixture: ABDiffPlanFixture, leaseStatus: Int3
           '--find|swift||') printf '%s\n' "$ABDIFF_FIXTURE_BIN/swift" ;;
           '--sdk|macosx|--show-sdk-path|') printf '%s\n' '/Fixture/Xcode/Developer/SDKs/MacOSX27.sdk' ;;
           '--sdk|macosx|--show-sdk-version|') printf '%s\n' '27.0' ;;
+          '--sdk|iphoneos|--show-sdk-path|') printf '%s\n' '/Fixture/Xcode/Developer/SDKs/iPhoneOS27.sdk' ;;
+          '--sdk|iphoneos|--show-sdk-version|') printf '%s\n' '27.0' ;;
           *) printf '%s\n' unexpected > "$ABDIFF_FIXTURE_ROOT/unexpected-native-command"; exit 98 ;;
         esac
         """#,
@@ -172,4 +215,40 @@ private func abdiffFixtureTools(in fixture: ABDiffPlanFixture, leaseStatus: Int3
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
     }
     return directory.path
+}
+
+private func writeABDiffDeploymentTools(bin: String, failedStep: String) throws {
+    let tools = [
+        "git": "#!/bin/sh\nexit 0\n",
+        "xcodebuild": #"""
+        #!/bin/sh
+        if [ "$1" = '-version' ]; then printf '%s\n' 'Xcode 27.0' 'Build version 18A123'; exit 0; fi
+        printf '%s\n' build >> "$ABDIFF_FIXTURE_ROOT/native-steps"
+        if [ '__FAILED_STEP__' = build ]; then exit 37; fi
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = '-derivedDataPath' ]; then cache="$2"; break; fi
+          shift
+        done
+        product="$cache/Build/Products/Debug-iphoneos/ABDiffIPad.app"
+        mkdir -p "$product"
+        printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>fixture.abdiff.from-built-product</string></dict></plist>' > "$product/Info.plist"
+        """#,
+    ]
+    for (name, script) in tools {
+        let path = bin + "/" + name
+        try Data((script.replacingOccurrences(of: "__FAILED_STEP__", with: failedStep) + "\n").utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+    }
+    let xcrunPath = bin + "/xcrun"
+    let original = try String(contentsOfFile: xcrunPath, encoding: .utf8)
+    let devicePrefix = #"""
+    #!/bin/sh
+    if [ "$1" = devicectl ]; then
+      if [ "$3" = install ]; then step=install; else step=launch; fi
+      printf '%s\n' "$step" >> "$ABDIFF_FIXTURE_ROOT/native-steps"
+      if [ '__FAILED_STEP__' = "$step" ]; then exit 37; fi
+      exit 0
+    fi
+    """#.replacingOccurrences(of: "__FAILED_STEP__", with: failedStep)
+    try Data((devicePrefix + "\n" + original).utf8).write(to: URL(fileURLWithPath: xcrunPath))
 }

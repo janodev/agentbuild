@@ -8,7 +8,7 @@ struct ABDiffCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "abdiff",
         abstract: "Build, test, generate, and run ABDiff with owned native execution.",
-        subcommands: [ABDiffPlanCommand.self, ABDiffBuildCommand.self, ABDiffGenerateCommand.self, ABDiffRunCommand.self]
+        subcommands: [ABDiffPlanCommand.self, ABDiffBuildCommand.self, ABDiffGenerateCommand.self, ABDiffRunCommand.self, ABDiffInstallCommand.self]
     )
 }
 
@@ -47,7 +47,7 @@ private struct ABDiffNativeOptions: ParsableArguments {
     @Option(help: "Closed build/test route, such as build, test-unit-file, or test-ui-file.")
     var route = "build"
 
-    @Option(help: "macos or ipad-simulator.")
+    @Option(help: "macos, ipad-simulator, or ipad-device (build/install only).")
     var platform = "macos"
 
     @Option(name: .customLong("configuration"), help: "Debug, DebugUITests, or Release; tests default to DebugUITests.")
@@ -62,7 +62,7 @@ private struct ABDiffNativeOptions: ParsableArguments {
     @Option(name: .customLong("only-testing"), help: "Repeat a literal test class or method selector.")
     var onlyTesting: [String] = []
 
-    @Option(help: "Explicit iPad Simulator model; defaults to iPad Pro 13-inch (M5).")
+    @Option(help: "iPad Simulator model, or explicit hardware UDID for ipad-device.")
     var device: String?
 
     func request(repository: String, action: ABDiffProjectAction) throws -> ABDiffProjectRequest {
@@ -118,6 +118,19 @@ struct ABDiffGenerateCommand: AsyncParsableCommand {
         do { request = try ABDiffProjectRequest(repository: common.repository, action: .generate, cached: cached) }
         catch { throw ValidationError(String(describing: error)) }
         try await executeABDiff(request, common: common)
+    }
+}
+
+struct ABDiffInstallCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "install",
+        abstract: "Build, install, and launch ABDiff on an explicit physical iPad, then return."
+    )
+    @OptionGroup private var common: ABDiffCommonOptions
+    @OptionGroup private var native: ABDiffNativeOptions
+
+    mutating func run() async throws {
+        try await executeABDiff(try native.request(repository: common.repository, action: .install), common: common)
     }
 }
 

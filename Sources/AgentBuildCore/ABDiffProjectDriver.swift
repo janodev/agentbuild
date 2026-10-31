@@ -128,6 +128,10 @@ public struct ABDiffProjectDriver: Sendable {
                         try await inspectTests(state: state, ownership: ownership, helper: helperExecutable,
                             environment: childEnvironment, admissionEnvironment: executionEnvironment, waitSeconds: waitSeconds)
                     }
+                    if request.action == .install, state.succeededSoFar {
+                        try await installOnDevice(state: state, ownership: ownership, helper: helperExecutable,
+                            environment: childEnvironment, admissionEnvironment: executionEnvironment, waitSeconds: waitSeconds)
+                    }
                     if request.action == .run, state.succeededSoFar {
                         try await launch(state: state, ownership: ownership, helper: helperExecutable,
                             environment: childEnvironment, admissionEnvironment: executionEnvironment, waitSeconds: waitSeconds)
@@ -245,6 +249,39 @@ public struct ABDiffProjectDriver: Sendable {
                 state.value.withLock { $0.launchedPID = pid }
                 try publish(state: state, ownership: ownership, lifecycle: "running", name: "preview-ready.json")
             })
+    }
+
+    private func installOnDevice(
+        state: ABDiffDriverState, ownership: ABDiffProjectOwnership, helper: String,
+        environment: [String: String], admissionEnvironment: [String: String], waitSeconds: Double?
+    ) async throws {
+        let plan = ownership.plan
+        guard plan.request.platform == "ipad-device", let device = plan.request.device else {
+            throw ABDiffProjectDriverError.invalidArgument("physical iPad target")
+        }
+        // Consume only this successful build's product, never a search for an
+        // older app. Read the actual bundle identifier for the launch request.
+        let product = try RetainedArtifactDirectory(path: plan.productPath)
+        let xcrun = try abdiffResolveTool("xcrun", environment: environment)
+        let info = try product.openFile(named: "Info.plist", policy: ArtifactFilePolicy(maximumBytes: 1_024 * 1_024))
+        guard let plist = try PropertyListSerialization.propertyList(from: info.readBounded(), format: nil) as? [String: Any],
+              let bundleID = plist["CFBundleIdentifier"] as? String,
+              bundleID.range(of: "^[A-Za-z0-9][A-Za-z0-9.-]+$", options: .regularExpression) != nil else {
+            throw ABDiffProjectDriverError.evidence("built app has no valid bundle identifier")
+        }
+        for (step, arguments) in [
+            ("device-install", ["devicectl", "device", "install", "app", "--device", device, plan.productPath,
+                                "--json-output", ownership.session.path + "/device-install.json", "--timeout", "120"]),
+            ("device-launch", ["devicectl", "device", "process", "launch", "--device", device, "--terminate-existing", bundleID,
+                               "--json-output", ownership.session.path + "/device-launch.json", "--timeout", "30"]),
+        ] {
+            guard state.succeededSoFar else { return }
+            try product.revalidate()
+            _ = try await perform(step, kind: "deployment", executable: xcrun,
+                arguments: arguments, environment: environment, compilation: false,
+                state: state, ownership: ownership, helper: helper,
+                admissionEnvironment: admissionEnvironment, waitSeconds: waitSeconds)
+        }
     }
 
     private func publish(state: ABDiffDriverState, ownership: ABDiffProjectOwnership, lifecycle: String, name: String) throws {

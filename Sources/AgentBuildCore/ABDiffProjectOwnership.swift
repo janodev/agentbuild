@@ -50,7 +50,9 @@ internal final class ABDiffProjectOwnership: Sendable {
         ] + (plan.request.action == .generate ? [] : [
             ("abdiff:cache-policy:" + plan.repository, .shared),
             ("abdiff:cache:" + plan.cacheDirectory, .exclusive),
-        ])
+        ]) + (plan.request.platform == "ipad-device" ? [
+            ("device:ios:" + plan.request.device!, .exclusive),
+        ] : [])
         var held: [LeaseSet] = []
         defer { for item in held.reversed() { item.release() } }
         for (resource, mode) in resourceSpecs {
