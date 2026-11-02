@@ -59,6 +59,41 @@ struct NotikaCacheUsageRecordTests {
         #expect(throws: NotikaCacheUsageError.invalidField(tamper.field)) { try admitUsage(input) }
     }
 
+    // The fixture was last used at 2026-09-02T12:34:56.123456Z (1_788_352_496_123_456 µs).
+    @Test func recordFromAnEarlierBootIsAdmittedAfterItsVolumeIsRenumbered() throws {
+        let afterLastUse = DirectoryIdentityBoot(bootedAtMicrosecondsSince1970: 1_788_352_496_123_457)
+        let renumbered = try usageObservation(deviceID: 16_777_235)
+        let record = try NotikaCacheUsageRecord(
+            data: Data(usageSchema3.utf8), directoryObservation: renumbered, boot: afterLastUse
+        )
+        #expect(record.directoryObservation.deviceID == 16_777_235)
+        #expect(record.originalData == Data(usageSchema3.utf8))
+    }
+
+    @Test func deviceMismatchFromTheCurrentBootIsRefused() throws {
+        let atLastUse = DirectoryIdentityBoot(bootedAtMicrosecondsSince1970: 1_788_352_496_123_456)
+        let renumbered = try usageObservation(deviceID: 16_777_235)
+        #expect(throws: NotikaCacheUsageError.invalidField("directoryIdentity")) {
+            try NotikaCacheUsageRecord(data: Data(usageSchema3.utf8), directoryObservation: renumbered, boot: atLastUse)
+        }
+    }
+
+    @Test func inodeMismatchIsRefusedAcrossBoots() throws {
+        let afterLastUse = DirectoryIdentityBoot(bootedAtMicrosecondsSince1970: 1_788_352_496_123_457)
+        for observation in [try usageObservation(inode: 81_234_568), try usageObservation(deviceID: 16_777_235, inode: 81_234_568)] {
+            #expect(throws: NotikaCacheUsageError.invalidField("directoryIdentity")) {
+                try NotikaCacheUsageRecord(data: Data(usageSchema3.utf8), directoryObservation: observation, boot: afterLastUse)
+            }
+        }
+    }
+
+    @Test func currentBootIsAPastKernelTime() throws {
+        let boot = try DirectoryIdentityBoot.current()
+        let now = Int64(Date().timeIntervalSince1970 * 1_000_000)
+        #expect(boot.bootedAtMicrosecondsSince1970 > 946_684_800_000_000)
+        #expect(boot.bootedAtMicrosecondsSince1970 <= now)
+    }
+
     @Test func coherentPhysicalBindingsStillRequireTheProfilesSchemaSpecificKey() throws {
         let foreignKey = String(repeating: "0", count: 24)
         let observation = try usageObservation(key: foreignKey)

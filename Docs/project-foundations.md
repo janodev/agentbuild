@@ -185,6 +185,11 @@ separate observations.
 `NotikaCacheUsageRecord` validates versions 1–4 against their respective cache
 keys, exact profile, repository, directory inode/device, owner and lifecycle.
 Its timestamps use checked Gregorian integer arithmetic before daily policy.
+The inode must always match. A volume receives its device number when it
+mounts, so a restart can renumber it: a stored device number may differ only
+when the record was last written before the current kernel boot
+(`DirectoryIdentityBoot`). Rust usage records and session-retention bindings
+apply the same rule.
 `NotikaCacheCustody` requires live graph/policy/cache ownership and pins the
 fixed same-user cache ancestry. Atomic usage updates preserve a valid cache's
 original creation timestamp; invalid existing metadata is not overwritten.

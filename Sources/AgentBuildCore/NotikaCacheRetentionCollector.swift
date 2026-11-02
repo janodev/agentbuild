@@ -396,7 +396,9 @@ private struct CacheRetentionAdmission: Sendable {
             canonicalRepository: repository, canonicalCacheRoot: root.path, canonicalCachePath: path,
             deviceID: deviceID, inode: identity.inode, ownerUID: identity.owner, effectiveUserID: geteuid()
         )
-        record = try NotikaCacheUsageRecord(data: metadata.readBounded(), directoryObservation: observation)
+        record = try NotikaCacheUsageRecord(
+            data: metadata.readBounded(), directoryObservation: observation, boot: DirectoryIdentityBoot.current()
+        )
         try revalidate(root: root)
     }
 

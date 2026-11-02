@@ -103,6 +103,7 @@ public final class NotikaCacheCustody: Sendable {
 
     private let ownership: ProjectOwnership
     private let directories: [CacheDirectoryPin]
+    private let boot: DirectoryIdentityBoot
     private let operation = Mutex(())
 
     public init(identity: CacheCompatibilityIdentity, ownership: ProjectOwnership) throws {
@@ -131,6 +132,7 @@ public final class NotikaCacheCustody: Sendable {
         self.identity = identity
         self.ownership = ownership
         directories = chain
+        boot = try DirectoryIdentityBoot.current()
         directoryObservation = observation
         facts = NotikaCacheCustodyFacts(
             canonicalRepository: identity.canonicalWorktree, cacheRoot: rootPath,
@@ -338,7 +340,7 @@ public final class NotikaCacheCustody: Sendable {
             throw NotikaCacheCustodyError.identityChanged(name)
         }
         let data = try cacheRead(descriptor, size: Int(status.st_size))
-        let record = try NotikaCacheUsageRecord(data: data, directoryObservation: directoryObservation)
+        let record = try NotikaCacheUsageRecord(data: data, directoryObservation: directoryObservation, boot: boot)
         let admission = CacheUsageAdmission(descriptor: retained, fingerprint: fingerprint, record: record)
         try admission.revalidate(directory: directory, name: name)
         return admission

@@ -99,12 +99,22 @@ public struct NotikaCacheUsageRecord: Equatable, Sendable {
     public var metadataDigest: String { document.digest }
     public var originalData: Data { document.originalData }
 
-    public init(data: Data, directoryObservation: NotikaCacheDirectoryObservation) throws {
+    /// Without `boot`, the stored device and inode must equal the observation.
+    /// With the current boot, a record last written during an earlier boot is
+    /// admitted by its inode alone, because its device number may be stale.
+    public init(
+        data: Data, directoryObservation: NotikaCacheDirectoryObservation, boot: DirectoryIdentityBoot? = nil
+    ) throws {
         let limits = try StrictJSONLimits(maximumBytes: Self.maximumBytes)
-        try self.init(document: StrictJSONDocument(data: data, limits: limits), directoryObservation: directoryObservation)
+        try self.init(
+            document: StrictJSONDocument(data: data, limits: limits), directoryObservation: directoryObservation, boot: boot
+        )
     }
 
-    public init(document: StrictJSONDocument, directoryObservation: NotikaCacheDirectoryObservation) throws {
+    public init(
+        document: StrictJSONDocument, directoryObservation: NotikaCacheDirectoryObservation,
+        boot: DirectoryIdentityBoot? = nil
+    ) throws {
         guard document.originalData.count <= Self.maximumBytes else {
             throw StrictJSONError.byteBudgetExceeded(Self.maximumBytes)
         }
@@ -131,8 +141,9 @@ public struct NotikaCacheUsageRecord: Equatable, Sendable {
         }
         let directory = try object.requiredValue(forKey: "directoryIdentity").requireObject()
         _ = try directory.project(requiredKeys: ["deviceID", "inode"])
-        guard try usageUnsigned("deviceID", in: directory) == directoryObservation.deviceID,
-              try usageUnsigned("inode", in: directory) == directoryObservation.inode else {
+        let storedDeviceID = try usageUnsigned("deviceID", in: directory)
+        let storedInode = try usageUnsigned("inode", in: directory)
+        guard storedInode == directoryObservation.inode else {
             throw NotikaCacheUsageError.invalidField("directoryIdentity")
         }
         let expectedResource = try CacheCompatibilityIdentity.cacheResourceName(
@@ -172,6 +183,14 @@ public struct NotikaCacheUsageRecord: Equatable, Sendable {
         guard created.microsecondsSince1970 <= lastUsed.microsecondsSince1970 else {
             throw NotikaCacheUsageError.invalidTimeRange
         }
+        // Every publication rewrites the directory identity, so the last use
+        // is when the stored device number was observed.
+        let sameDirectory = boot?.admits(
+            storedDeviceID: storedDeviceID, storedInode: storedInode,
+            recordedAtMicrosecondsSince1970: lastUsed.microsecondsSince1970,
+            observedDeviceID: directoryObservation.deviceID, observedInode: directoryObservation.inode
+        ) ?? (storedDeviceID == directoryObservation.deviceID)
+        guard sameDirectory else { throw NotikaCacheUsageError.invalidField("directoryIdentity") }
 
         self.document = document
         self.directoryObservation = directoryObservation

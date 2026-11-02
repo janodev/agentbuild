@@ -43,6 +43,29 @@ struct NotikaRustTestExecutorTests {
         }
     }
 
+    @Test func usageFromAnEarlierBootIsAdmittedOnlyByItsInodeAfterRenumbering() throws {
+        let identity = try rustFixtureIdentity(repository: "/fixture/Notika", family: .liteparse)
+        let original = try NotikaRustCacheObservation(identity: identity, deviceID: 1, inode: 7, ownerUID: geteuid())
+        let record = try NotikaRustCacheUsageRecord.make(identity: identity, observation: original, sessionID: "fixture",
+                                                       usedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let renumbered = try NotikaRustCacheObservation(identity: identity, deviceID: 2, inode: 7, ownerUID: geteuid())
+        let afterLastUse = DirectoryIdentityBoot(bootedAtMicrosecondsSince1970: 1_700_000_000_000_001)
+        let atLastUse = DirectoryIdentityBoot(bootedAtMicrosecondsSince1970: 1_700_000_000_000_000)
+        let admitted = try NotikaRustCacheUsageRecord(data: record.document.originalData, identity: identity,
+                                                      observation: renumbered, boot: afterLastUse)
+        #expect(admitted == record)
+        #expect(throws: NotikaRustTestError.unsafeMetadata) {
+            try NotikaRustCacheUsageRecord(data: record.document.originalData, identity: identity, observation: renumbered, boot: atLastUse)
+        }
+        #expect(throws: NotikaRustTestError.unsafeMetadata) {
+            try NotikaRustCacheUsageRecord(data: record.document.originalData, identity: identity, observation: renumbered)
+        }
+        let moved = try NotikaRustCacheObservation(identity: identity, deviceID: 2, inode: 8, ownerUID: geteuid())
+        #expect(throws: NotikaRustTestError.unsafeMetadata) {
+            try NotikaRustCacheUsageRecord(data: record.document.originalData, identity: identity, observation: moved, boot: afterLastUse)
+        }
+    }
+
     @Test func usageRoundTripsJSONIntegersWithoutWeakeningSchemaAdmission() throws {
         let identity = try rustFixtureIdentity(repository: "/fixture/Notika", family: .liteparse)
         let observation = try NotikaRustCacheObservation(identity: identity, deviceID: 1, inode: 7, ownerUID: geteuid())

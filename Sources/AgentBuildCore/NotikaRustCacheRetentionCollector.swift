@@ -381,7 +381,9 @@ private struct RustRetentionAdmission: Sendable {
         let observation = try NotikaRustCacheObservation(identity: material, deviceID: deviceID, inode: identity.inode, ownerUID: identity.owner)
         guard observation.cacheKey == name, observation.cacheRoot.utf8.elementsEqual(root.path.utf8),
               observation.cachePath.utf8.elementsEqual(path.utf8) else { throw NotikaRustTestError.unsafeMetadata }
-        record = try NotikaRustCacheUsageRecord(data: data, identity: material, observation: observation)
+        record = try NotikaRustCacheUsageRecord(
+            data: data, identity: material, observation: observation, boot: DirectoryIdentityBoot.current()
+        )
         lastUsedAtMicroseconds = try rustRetentionExactTime(record.lastUsedAt)
         lastUsedAt = Date(timeIntervalSince1970: Double(lastUsedAtMicroseconds) / 1_000_000)
         try revalidate(root: root)

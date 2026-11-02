@@ -63,6 +63,11 @@ Python terminal manifests are also recognized. Legacy owner checks use exact
 process birth identity; live or unobservable owners remain protected. Unknown
 families and malformed or future lifecycle evidence remain protected.
 
+Directory bindings in cache usage records and session evidence always require
+the recorded inode. A recorded device number from an earlier kernel boot is
+admitted when it differs, because remounting at restart renumbers the volume;
+a device mismatch within the current boot remains invalid.
+
 Legacy Python publication can leave a second, sealed hard link named
 `.<filename>.<PID>.<32-lowercase-hex>.stage`, where the filename is
 `manifest.json` or `development-session.json`, inside the same session.

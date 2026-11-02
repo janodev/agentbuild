@@ -590,11 +590,15 @@ private final class SessionRetentionAdmission: Sendable {
                     throw NotikaSessionRetentionError.invalidManifest
                 }
                 let directory = try object.requiredValue(forKey: "directoryIdentity").requireObject()
-                guard try sessionRetentionUInt(directory, "deviceID") == UInt64(observed.st_dev),
-                      try sessionRetentionUInt(directory, "inode") == observed.st_ino, manifest.fingerprint.links == 2 else {
+                startedAt = try sessionRetentionDate(object, "startedAt")
+                // A session records its directory identity once, when it starts.
+                guard try DirectoryIdentityBoot.current().admits(
+                          storedDeviceID: sessionRetentionUInt(directory, "deviceID"),
+                          storedInode: sessionRetentionUInt(directory, "inode"), recordedAt: startedAt,
+                          observedDeviceID: UInt64(observed.st_dev), observedInode: UInt64(observed.st_ino)
+                      ), manifest.fingerprint.links == 2 else {
                     throw NotikaSessionRetentionError.invalidManifest
                 }
-                startedAt = try sessionRetentionDate(object, "startedAt")
                 completedAt = inactiveProgress ? nil : try sessionRetentionDate(object, "completedAt")
                 expiresAt = inactiveProgress ? nil : try sessionRetentionDate(object, "expiresAt")
                 let names = try sessionRetentionNames(opened, maximum: NotikaSessionRetentionCollector.maximumRootEntries)
@@ -639,11 +643,14 @@ private final class SessionRetentionAdmission: Sendable {
                 guard try sessionRetentionUInt(object, "ownerUID") == UInt64(geteuid()),
                       manifest.fingerprint.links == 1 else { throw NotikaSessionRetentionError.invalidManifest }
                 let directory = try object.requiredValue(forKey: "directoryIdentity").requireObject()
-                guard try sessionRetentionUInt(directory, "deviceID") == UInt64(observed.st_dev),
-                      try sessionRetentionUInt(directory, "inode") == observed.st_ino else {
+                startedAt = try sessionRetentionDate(object, "startedAt")
+                guard try DirectoryIdentityBoot.current().admits(
+                          storedDeviceID: sessionRetentionUInt(directory, "deviceID"),
+                          storedInode: sessionRetentionUInt(directory, "inode"), recordedAt: startedAt,
+                          observedDeviceID: UInt64(observed.st_dev), observedInode: UInt64(observed.st_ino)
+                      ) else {
                     throw NotikaSessionRetentionError.invalidManifest
                 }
-                startedAt = try sessionRetentionDate(object, "startedAt")
                 completedAt = inactiveProgress ? nil : try sessionRetentionDate(object, "completedAt")
                 expiresAt = inactiveProgress ? nil : try sessionRetentionDate(object, "expiresAt")
                 // Standalone publication removes its private temporary name;
@@ -800,7 +807,7 @@ private func sessionRetentionValidateAuthority(
           sessionRetentionHex(try sessionRetentionString(root, "sourceBeforeHash"), count: 64) else {
         throw NotikaSessionRetentionError.invalidManifest
     }
-    _ = try sessionRetentionDate(root, "createdAt")
+    let createdAt = try sessionRetentionDate(root, "createdAt")
     let requestValue = try root.requiredValue(forKey: "request")
     let encodedRequest = try CanonicalJSONDigest.encode(sessionRetentionCanonical(requestValue))
     let request = try JSONDecoder().decode(NotikaActionRequest.self, from: encodedRequest)
@@ -809,8 +816,11 @@ private func sessionRetentionValidateAuthority(
     }
     let artifacts = try root.requiredValue(forKey: "artifacts").requireObject().project(requiredKeys: ["deviceID", "inode", "root"])
     guard try sessionRetentionString(artifacts, "root").utf8.elementsEqual((repository + "/Artifacts/AgentSessions/" + name).utf8),
-          try sessionRetentionUInt(artifacts, "deviceID") == UInt64(directory.st_dev),
-          try sessionRetentionUInt(artifacts, "inode") == directory.st_ino else { throw NotikaSessionRetentionError.invalidManifest }
+          try DirectoryIdentityBoot.current().admits(
+              storedDeviceID: sessionRetentionUInt(artifacts, "deviceID"),
+              storedInode: sessionRetentionUInt(artifacts, "inode"), recordedAt: createdAt,
+              observedDeviceID: UInt64(directory.st_dev), observedInode: UInt64(directory.st_ino)
+          ) else { throw NotikaSessionRetentionError.invalidManifest }
     let cache = try root.requiredValue(forKey: "cache").requireObject().project(requiredKeys: ["key", "path", "lockPath", "ownershipAuthority"])
     let key = try sessionRetentionString(cache, "key")
     guard sessionRetentionHex(key, count: 24),
@@ -864,14 +874,23 @@ private func sessionRetentionValidateAbandoned(
           ["owner-process-absent", "owner-identity-replaced"].contains(try sessionRetentionString(abandonment, "observedLiveness")) else {
         throw NotikaSessionRetentionError.invalidManifest
     }
+    // Adjudication recorded both identities when the session completed.
+    let adjudicatedAt = try sessionRetentionDate(root, "completedAt")
+    let boot = try DirectoryIdentityBoot.current()
     let binding = try abandonment.requiredValue(forKey: "authority").requireObject().project(requiredKeys: ["path", "deviceID", "inode", "sha256"])
     guard try sessionRetentionString(binding, "path").utf8.elementsEqual((repository + "/Artifacts/AgentSessions/" + name + "/development-session.json").utf8),
-          try sessionRetentionUInt(binding, "deviceID") == UInt64(authority.fingerprint.identity.device),
-          try sessionRetentionUInt(binding, "inode") == authority.fingerprint.identity.inode,
+          try boot.admits(
+              storedDeviceID: sessionRetentionUInt(binding, "deviceID"), storedInode: sessionRetentionUInt(binding, "inode"),
+              recordedAt: adjudicatedAt, observedDeviceID: UInt64(authority.fingerprint.identity.device),
+              observedInode: UInt64(authority.fingerprint.identity.inode)
+          ),
           binding.value(forKey: "sha256") == .string(authority.digest) else { throw NotikaSessionRetentionError.invalidManifest }
     let originalDirectory = try abandonment.requiredValue(forKey: "directory").requireObject().project(requiredKeys: ["deviceID", "inode"])
-    guard try sessionRetentionUInt(originalDirectory, "deviceID") == UInt64(directory.st_dev),
-          try sessionRetentionUInt(originalDirectory, "inode") == directory.st_ino else { throw NotikaSessionRetentionError.invalidManifest }
+    guard try boot.admits(
+              storedDeviceID: sessionRetentionUInt(originalDirectory, "deviceID"),
+              storedInode: sessionRetentionUInt(originalDirectory, "inode"), recordedAt: adjudicatedAt,
+              observedDeviceID: UInt64(directory.st_dev), observedInode: UInt64(directory.st_ino)
+          ) else { throw NotikaSessionRetentionError.invalidManifest }
     let custody = try abandonment.requiredValue(forKey: "custody").requireObject().project(requiredKeys: ["process", "lease", "cache", "artifacts"])
     guard custody.value(forKey: "process") == .string("not-signaled"), custody.value(forKey: "lease") == .string("not-adopted-or-released"),
           custody.value(forKey: "cache") == .string("not-deleted-or-unlocked"), custody.value(forKey: "artifacts") == .string("retained-in-place") else {

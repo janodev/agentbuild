@@ -95,7 +95,7 @@ public struct NotikaRustCacheObservation: Equatable, Sendable {
     public let cacheRoot: String
     public let cachePath: String
     public let cacheKey: String
-    public let deviceID: UInt64
+    public private(set) var deviceID: UInt64
     public let inode: UInt64
     public let ownerUID: UInt32
 
@@ -108,6 +108,12 @@ public struct NotikaRustCacheObservation: Equatable, Sendable {
         self.inode = inode
         self.ownerUID = ownerUID
     }
+
+    fileprivate func replacingDeviceID(_ deviceID: UInt64) -> Self {
+        var observation = self
+        observation.deviceID = deviceID
+        return observation
+    }
 }
 
 /// Reference-compatible Rust usage schema 1; unknown schemas/fields/bindings
@@ -119,7 +125,12 @@ public struct NotikaRustCacheUsageRecord: Equatable, Sendable {
     public let lastUsedAt: String
     public let lastSessionID: String
 
-    public init(data: Data, identity: NotikaRustCacheIdentity, observation: NotikaRustCacheObservation) throws {
+    /// Without `boot`, the stored device and inode must equal the observation.
+    /// With the current boot, a record last written during an earlier boot is
+    /// admitted by its inode alone, because its device number may be stale.
+    public init(
+        data: Data, identity: NotikaRustCacheIdentity, observation: NotikaRustCacheObservation, boot: DirectoryIdentityBoot? = nil
+    ) throws {
         let document = try StrictJSONDocument(data: data, limits: StrictJSONLimits(maximumBytes: Self.maximumBytes))
         let object = try document.root.requireObject()
         func string(_ key: String) throws -> String {
@@ -129,7 +140,21 @@ public struct NotikaRustCacheUsageRecord: Equatable, Sendable {
         let created = try string("createdAt"), used = try string("lastUsedAt"), session = try string("lastSessionID")
         guard rustSessionID(session), let first = rustParseTime(created), let last = rustParseTime(used), first <= last,
               observation.ownerUID == geteuid() else { throw NotikaRustTestError.unsafeMetadata }
-        let expected = try Self.material(identity: identity, observation: observation, sessionID: session, createdAt: created, lastUsedAt: used)
+        // Every publication rewrites the directory identity, so the last use is
+        // when the stored device number was observed. Exact material equality
+        // below still binds every other field, including the inode.
+        var admittedObservation = observation
+        if let boot, case .object(let directory)? = object.value(forKey: "directoryIdentity"),
+           case .number(let device)? = directory.value(forKey: "deviceID"), let storedDeviceID = try? device.uint64(),
+           storedDeviceID != observation.deviceID,
+           boot.admits(storedDeviceID: storedDeviceID, storedInode: observation.inode,
+                       recordedAtMicrosecondsSince1970: last, observedDeviceID: observation.deviceID,
+                       observedInode: observation.inode) {
+            admittedObservation = observation.replacingDeviceID(storedDeviceID)
+        }
+        let expected = try Self.material(
+            identity: identity, observation: admittedObservation, sessionID: session, createdAt: created, lastUsedAt: used
+        )
         // A parsed positive JSON integer uses the unsigned representation,
         // whereas producer constants may use signed integers. JSON bytes, not
         // that internal enum choice, define exact schema/material equality.
@@ -342,6 +367,7 @@ private final class RustCacheCustody: Sendable {
     private let cacheLease: LeaseSet
     private let directories: [RustDirectoryPin]
     private let tempDirectories: [RustDirectoryPin]
+    private let boot: DirectoryIdentityBoot
 
     init(identity: NotikaRustCacheIdentity, ownership: ProjectOwnership, policy: LeaseSet, cacheLease: LeaseSet, temporaryDirectory: String) throws {
         self.identity = identity; self.ownership = ownership; self.policy = policy; self.cacheLease = cacheLease
@@ -354,6 +380,7 @@ private final class RustCacheCustody: Sendable {
             throw NotikaRustTestError.unsafePath(cache.path)
         }
         observation = try NotikaRustCacheObservation(identity: identity, deviceID: device, inode: UInt64(cache.status.st_ino), ownerUID: cache.status.st_uid)
+        boot = try DirectoryIdentityBoot.current()
         let components = String(temporaryDirectory.dropFirst(identity.repository.count + 1)).split(separator: "/").map(String.init)
         tempDirectories = try RustDirectoryPin.chain(root: identity.repository, components: components, create: false)
         guard tempDirectories.last!.status.st_mode & 0o077 == 0 else { throw NotikaRustTestError.unsafePath(temporaryDirectory) }
@@ -384,7 +411,7 @@ private final class RustCacheCustody: Sendable {
             throw NotikaRustTestError.unsafeMetadata
         }
         let record: NotikaRustCacheUsageRecord
-        do { record = try NotikaRustCacheUsageRecord(data: bytes, identity: identity, observation: observation) }
+        do { record = try NotikaRustCacheUsageRecord(data: bytes, identity: identity, observation: observation, boot: boot) }
         catch { throw NotikaRustTestError.unsafeMetadata }
         try revalidate()
         return record
