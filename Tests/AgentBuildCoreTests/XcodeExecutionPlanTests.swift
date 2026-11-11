@@ -1,4 +1,5 @@
 import AgentBuildCore
+import AgentBuildTestSupport
 import AgentLeaseCore
 import Darwin
 import Foundation

@@ -1,4 +1,5 @@
 import AgentBuildCore
+import AgentBuildTestSupport
 import AgentLeaseCore
 import Darwin
 import Foundation
@@ -118,36 +119,4 @@ private func compilationWaitUntil(_ predicate: () -> Bool) async throws {
         guard ContinuousClock.now < deadline else { throw CompilationFixture.Failure.expected }
         try await Task.sleep(for: .milliseconds(5))
     }
-}
-
-struct CompilationFixture: Sendable {
-    enum Failure: Error { case expected }
-    let directory: URL
-    let registry: URL
-    let paths: AgentLeasePaths
-
-    var environment: [String: String] { ["AGENTLEASE_COMPILE_HOME": registry.path] }
-
-    init() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agentbuild-compile-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard realpath(directory.path, &buffer) != nil else { throw Failure.expected }
-        let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-        self.directory = URL(fileURLWithPath: path)
-        registry = self.directory.appendingPathComponent("compile-registry")
-        paths = try AgentLeasePaths.open(selectedRoot: registry.path)
-    }
-
-    func lock() throws -> FileLock {
-        try FileLock(resource: ResourceName(HostCompilationAdmission.resource), paths: paths)
-    }
-
-    func available() throws -> Bool {
-        let contender = try lock()
-        defer { contender.release() }
-        return try contender.tryAcquire()
-    }
-
-    func remove() { try? FileManager.default.removeItem(at: directory) }
 }

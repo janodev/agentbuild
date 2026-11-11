@@ -28,7 +28,7 @@ public final class ArtifactTrashSource: Sendable {
     private let revalidation: @Sendable () throws -> Void
     private let live = Mutex(true)
 
-    internal init(
+    package init(
         directory: RetainedArtifactDirectory, originalPath: String,
         inheritedDescriptors: [Int32], revalidate: @escaping @Sendable () throws -> Void
     ) {
@@ -52,7 +52,7 @@ public final class ArtifactTrashSource: Sendable {
         }
     }
 
-    internal func retire() { live.withLock { $0 = false } }
+    package func retire() { live.withLock { $0 = false } }
 
     private func validate() throws {
         try directory.revalidate()

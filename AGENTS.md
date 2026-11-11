@@ -14,7 +14,10 @@ tags: [development, agents, testing]
   acquires the account-wide AgentLease `host:compile` resource. Keep the default
   all logical CPU cores unless the user requests a different setting.
 - Use Apple Testing for Swift tests. Do not run SwiftFormat or SwiftLint.
-- The CLI provides generic owned execution and the Notika and ABDiff development adapters.
+- The CLI provides generic owned execution and the Notika, ABDiff, and Gunship adapters.
+  Each adapter owns a separate target and tests under `Adapters/<project>`.
+  Read `Docs/adapter-modules.md` before changing target ownership. Adapters must
+  not depend on one another; shared layers must not import adapter modules.
   Read `Docs/execution.md`, `Docs/notika-workflows.md`, and the relevant contract
   before lifecycle changes. Keep native outcomes, raw evidence, source drift,
   and publication failures separate. The former Python driver is a test behavior

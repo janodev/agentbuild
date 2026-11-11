@@ -28,11 +28,13 @@ public struct NativePhaseResult: Sendable {
 public final class NativePhaseQuarantine: Sendable {
     public let identifier: UUID
     public let nativePID: Int32?
+    public let retirementScope: DarwinWorkloadRetirementScope
     private let releaseState = Mutex(false)
 
-    fileprivate init(descriptors: [Int32], nativePID: Int32?) {
+    fileprivate init(descriptors: [Int32], nativePID: Int32?, retirementScope: DarwinWorkloadRetirementScope) {
         identifier = UUID()
         self.nativePID = nativePID
+        self.retirementScope = retirementScope
         NativeQuarantineRegistry.entries.withLock { $0[identifier] = descriptors }
     }
 
@@ -44,7 +46,7 @@ public final class NativePhaseQuarantine: Sendable {
         await withCheckedContinuation { continuation in
             DispatchQueue(label: "agentbuild.native-quarantine", qos: .utility).async {
                 while !self.quiescenceProven {
-                    if let pid = self.nativePID, nativePhaseGroupIsEmpty(pid) {
+                    if let pid = self.nativePID, self.scopeIsEmpty(pid) {
                         self.releaseState.withLock { state in
                             guard !state else { return }
                             let descriptors = NativeQuarantineRegistry.entries.withLock { $0.removeValue(forKey: self.identifier) }
@@ -55,6 +57,13 @@ public final class NativePhaseQuarantine: Sendable {
                 }
                 continuation.resume()
             }
+        }
+    }
+
+    private func scopeIsEmpty(_ pid: Int32) -> Bool {
+        switch retirementScope {
+        case .processGroup: nativePhaseGroupIsEmpty(pid)
+        case .session: DarwinProcessSession.liveMembers(of: pid)?.isEmpty == true
         }
     }
 }
@@ -224,7 +233,8 @@ private final class NativePhaseParent {
         let proven = pid == nil || (reportValid && reportEOF && receipt != nil)
         var quarantine: NativePhaseQuarantine?
         if !proven {
-            quarantine = NativePhaseQuarantine(descriptors: ownedLocks, nativePID: nativePID)
+            quarantine = NativePhaseQuarantine(descriptors: ownedLocks, nativePID: nativePID,
+                                               retirementScope: command.retirementScope)
             owned.removeAll { ownedLocks.contains($0) }
             ownedLocks.removeAll()
             record(NativeWorkerProtocol.protocolFailure("native retirement unproven; actual locks quarantined"), operation: "receipt")

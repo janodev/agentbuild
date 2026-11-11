@@ -4,15 +4,25 @@ import Dispatch
 import Foundation
 import Synchronization
 
+/// Session scope also waits for children that create their own process group.
+/// Only the original pinned group is signalled; descendants must remain in the
+/// session and retire before ownership can be released.
+public enum DarwinWorkloadRetirementScope: String, Codable, Sendable {
+    case processGroup
+    case session
+}
+
 public struct DarwinWorkloadCommand: Sendable {
     public let executable: String
     public let arguments: [String]
     public let workingDirectory: String
     public let environment: [String: String]
+    public let retirementScope: DarwinWorkloadRetirementScope
 
     public init(
         executable: String, arguments: [String] = [], workingDirectory: String,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        retirementScope: DarwinWorkloadRetirementScope = .processGroup
     ) throws {
         guard [executable, workingDirectory].allSatisfy({ $0.hasPrefix("/") && !$0.utf8.contains(0) }),
               !arguments.contains(where: { $0.utf8.contains(0) }),
@@ -24,6 +34,7 @@ public struct DarwinWorkloadCommand: Sendable {
         self.arguments = arguments
         self.workingDirectory = workingDirectory
         self.environment = environment
+        self.retirementScope = retirementScope
     }
 }
 
@@ -50,7 +61,7 @@ public enum DarwinWorkloadRetirement: String, Codable, Sendable {
     case reaped
 }
 
-/// A returned result never represents an uncertain or still-running group.
+/// A returned result never represents an uncertain or still-running scope.
 /// Native termination is independent of capture, callback, and cleanup failures.
 public struct DarwinWorkloadResult: Codable, Equatable, Sendable {
     public let processIdentifier: Int32?
@@ -292,12 +303,17 @@ private final class WorkloadWorker {
         while true {
             observeStop()
             let exited = peekTermination(pid)
-            if exited == true, groupContainsOnlyExitedLeader(pid) {
+            if exited == true, scopeContainsOnlyExitedLeader(pid) {
                 if reap(pid) { return }
             }
             // An unsuccessful wait observation cannot prove that the PID is
             // still pinned. Retain ownership and retry without signalling it.
-            if exited != nil && (stopReason != nil || exited == true) {
+            // Session drain may outlast the original group. Darwin can reject
+            // signalling a group containing only its zombie leader with EPERM;
+            // wait for the other session groups without inventing a failure.
+            let originalGroupRetired = command.retirementScope == .session
+                && exited == true && groupContainsOnlyExitedLeader(pid)
+            if exited != nil && (stopReason != nil || exited == true) && !originalGroupRetired {
                 let now = DispatchTime.now().uptimeNanoseconds
                 if escalationAt == nil {
                     signalGroup(pid, SIGTERM)
@@ -312,6 +328,15 @@ private final class WorkloadWorker {
             var remainder = timespec()
             while nanosleep(&interval, &remainder) != 0 && errno == EINTR { interval = remainder }
         }
+    }
+
+    func scopeContainsOnlyExitedLeader(_ pid: Int32) -> Bool {
+        if command.retirementScope == .session {
+            // The unreaped native leader pins the session identity. A worker
+            // changing only its process group cannot escape this census.
+            return DarwinProcessSession.liveMembers(of: pid)?.isEmpty == true
+        }
+        return groupContainsOnlyExitedLeader(pid)
     }
 
     func peekTermination(_ pid: Int32) -> Bool? {
@@ -360,9 +385,17 @@ private final class WorkloadWorker {
     }
 
     func signalGroup(_ pid: Int32, _ signal: Int32) {
-        if kill(-pid, signal) != 0, errno != ESRCH {
-            record(DarwinWorkloadFailure(operation: "kill process group", code: errno))
-        }
+        guard kill(-pid, signal) != 0 else { return }
+        let code = errno
+        guard code != ESRCH else { return }
+        // The last live original-group member can exit between its census and
+        // this signal. Its zombie leader still pins the group identifier, but
+        // Darwin returns EPERM for signalling only zombies. Suppress that one
+        // expected result only after a fresh kernel census proves no live
+        // member remains; permission and observation failures stay failures.
+        if code == EPERM, command.retirementScope == .session, nativeTermination != nil,
+           DarwinProcessSession.groupHasLiveMembers(pid) == false { return }
+        record(DarwinWorkloadFailure(operation: "kill process group", code: code))
     }
 
     func reap(_ pid: Int32) -> Bool {

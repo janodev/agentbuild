@@ -1,4 +1,5 @@
 @testable import AgentBuildCore
+import AgentBuildTestSupport
 import AgentLeaseCore
 import Darwin
 import Foundation
@@ -390,8 +391,7 @@ private final class PhaseFixture: Sendable {
     var errorURL: URL { url("stderr") }
     var lockURL: URL { url("owned.lock") }
     var helper: String {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent(".build/debug/agentbuild").path
+        AgentBuildTestPaths.packageRoot.appendingPathComponent(".build/debug/agentbuild").path
     }
 
     init(locked: Bool = true) throws {

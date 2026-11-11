@@ -15,6 +15,7 @@ enum NativeWorkerProtocol {
         let arguments: [String]
         let workingDirectory: String
         let environment: [String: String]
+        let retirementScope: DarwinWorkloadRetirementScope?
         let lockDescriptors: [Int32]
         let workingDirectoryBinding: NativeWorkerDirectoryBinding?
 
@@ -26,13 +27,15 @@ enum NativeWorkerProtocol {
             arguments = command.arguments
             workingDirectory = command.workingDirectory
             environment = command.environment
+            retirementScope = command.retirementScope == .processGroup ? nil : command.retirementScope
             lockDescriptors = locks
             self.workingDirectoryBinding = workingDirectoryBinding
         }
 
         func command() throws -> DarwinWorkloadCommand {
             try DarwinWorkloadCommand(executable: executable, arguments: arguments,
-                                      workingDirectory: workingDirectory, environment: environment)
+                                      workingDirectory: workingDirectory, environment: environment,
+                                      retirementScope: retirementScope ?? .processGroup)
         }
     }
 
@@ -65,7 +68,7 @@ enum NativeWorkerProtocol {
         let limits = try StrictJSONLimits(maximumBytes: maximumRequestBytes, maximumDepth: 8, maximumNodes: 32_768)
         let object = try StrictJSONDocument(data: data, limits: limits).root.requireObject()
             .project(requiredKeys: ["schemaVersion", "nonce", "executable", "arguments", "workingDirectory", "environment", "lockDescriptors"],
-                     optionalKeys: ["workingDirectoryBinding"])
+                     optionalKeys: ["workingDirectoryBinding", "retirementScope"])
         guard try integer(object, "schemaVersion") == 1,
               UUID(uuidString: nonce) != nil, try string(object, "nonce").utf8.elementsEqual(nonce.utf8),
               case .array(let arguments) = try object.requiredValue(forKey: "arguments"), arguments.count <= 4_096,

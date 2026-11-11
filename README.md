@@ -1,7 +1,7 @@
 ---
 type: Project
 title: agentbuild
-description: A Swift CLI for owned Notika and ABDiff development, leased commands, durable raw logs, and native outcome evidence.
+description: A Swift CLI for owned Notika, ABDiff, and Gunship development, leased commands, durable raw logs, and native outcome evidence.
 tags: [swift, cli, builds, agentlease]
 ---
 
@@ -20,8 +20,16 @@ and tests, and supervised application launch. It shares compilation admission
 and native supervision with Notika while retaining its own project profiles and
 artifacts. See [ABDiff workflows](Docs/abdiff-workflows.md).
 
+Gunship has an Unreal adapter for editor and game compilation, headless
+automation, cooking and packaging, and packaged gameplay validation. Only
+Unreal Build Tool compilation holds the shared compilation gate. See
+[Gunship workflows](Docs/gunship-workflows.md).
+
 The core preserves literal arguments, explicit resource ownership, per-stream
 and combined raw logs, actual native outcomes, and source/result evidence boundaries.
+Each project adapter has its own SwiftPM target and tests under `Adapters/`;
+they link with the shared core into one executable. See
+[Adapter modules](Docs/adapter-modules.md) for the source layout and dependency rules.
 See the [project foundations](Docs/project-foundations.md) for ownership,
 process retirement, raw-log custody, and source/result evidence boundaries.
 
@@ -45,7 +53,7 @@ can end. Its managed project routes provide:
 - **Inspectable results.** Raw logs, native exit status, result bundles, and
   executed-test counts accompany source and toolchain observations. Source drift
   and reporting failures remain separate from actual native outcomes.
-- **Shared workflow code.** Notika and ABDiff adapters reuse ownership, process
+- **Shared workflow code.** Notika, ABDiff, and Gunship adapters reuse ownership, process
   supervision, and log capture while retaining their own commands and artifacts.
 
 Keeping these rules in a separately tested and installed Swift CLI lets projects
@@ -76,6 +84,8 @@ agentbuild abdiff plan --repository /absolute/path/to/ABDiff --route build-macos
 agentbuild abdiff generate --repository /absolute/path/to/ABDiff
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-macos
 agentbuild abdiff build --repository /absolute/path/to/ABDiff --route test-unit-file --file SomeTests
+agentbuild gunship test --repository /absolute/path/to/Gunship --engine /absolute/path/to/UE_5.8 --filter Gunship.Zombies
+agentbuild gunship package --repository /absolute/path/to/Gunship --engine /absolute/path/to/UE_5.8 --archive /absolute/archive
 ```
 
 Doctor requires successful version probes for `swift`, `xcodebuild`, and

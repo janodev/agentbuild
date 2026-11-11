@@ -1,4 +1,5 @@
 import AgentBuildCore
+import AgentBuildTestSupport
 import AgentLeaseCore
 import Darwin
 import Foundation
@@ -160,8 +161,7 @@ private struct CLIFixture {
     func remove() { try? FileManager.default.removeItem(at: directory) }
 
     func process(arguments: [String], resourceOption: String = "--resource") -> Process {
-        let executable = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/debug/agentbuild")
+        let executable = AgentBuildTestPaths.packageRoot.appendingPathComponent(".build/debug/agentbuild")
         let process = Process()
         process.executableURL = executable
         process.arguments = [

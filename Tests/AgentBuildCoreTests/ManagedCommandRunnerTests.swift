@@ -1,4 +1,5 @@
 import AgentBuildCore
+import AgentBuildTestSupport
 import AgentLeaseCore
 import Darwin
 import Foundation
@@ -212,8 +213,7 @@ struct ManagedCommandRunnerTests {
         let fixture = try ExecutionFixture()
         defer { fixture.remove() }
         let marker = fixture.directory.appendingPathComponent("child.pid")
-        let executable = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/debug/agentbuild")
+        let executable = AgentBuildTestPaths.packageRoot.appendingPathComponent(".build/debug/agentbuild")
         let process = Process()
         process.executableURL = executable
         process.arguments = [

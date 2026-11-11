@@ -7,7 +7,12 @@ tags: [architecture, subprocess, agentlease, testing]
 
 # Integrated controller
 
-`agentbuild` separates a Swift core from its ArgumentParser CLI. It targets
+`agentbuild` separates a Swift core, shared CLI support, and independent Notika,
+ABDiff, and Gunship adapter modules from its ArgumentParser entry point.
+Each adapter has sources and tests under `Adapters/<project>` and depends only
+on shared layers. The root package links them into one executable; see
+[Adapter modules](adapter-modules.md) for the dependency and extension rules.
+It targets
 macOS 27 or later with Swift tools 6.4 and Swift 6 language mode.
 ArgumentParser 1.8.2 and Subprocess 1.0.0 are exact dependencies; AgentLeaseCore
 uses a reviewed Git revision.
@@ -36,6 +41,15 @@ literal arguments to `agentbuild abdiff`; they do not enter Notika's route or
 cache contracts. ABDiff's Simulator workflows use stock SimLease simulators;
 physical iPad build/install workflows require an exact hardware UDID and own
 that device through deployment without a Simulator or desktop lease.
+
+The [Gunship adapter](gunship-workflows.md) runs that Unreal project's own build,
+automation, packaging, and validation scripts as supervised phases. Unreal
+Build Tool build phases enter `host:compile`; packaged validation enters one
+SimLease macOS UI boundary. Its project, archive, and session namespaces are
+separate from Notika's and ABDiff's. Its documented
+[limitations](gunship-workflows.md#known-limitations) cover unmanaged archive
+launches, workers escaping the native session, cancellation waiting for workers,
+and UAT compilation outside the UBT gate.
 
 Doctor exits `0` only when all three required probes succeed, and `1` otherwise.
 JSON output has `schemaVersion: 1`, `toolVersion: 0.3.0`, `stage: bootstrap`,

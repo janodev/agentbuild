@@ -1,15 +1,18 @@
+import ABDiffAdapter
 import AgentBuildCore
 import ArgumentParser
 import Foundation
+import GunshipAdapter
+import NotikaAdapter
 
 @main
 struct AgentBuildCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentbuild",
         abstract: "Coordinate owned commands and preserve their native results and logs.",
-        discussion: "The Notika and ABDiff adapters run owned development workflows; run executes generic explicitly leased commands.",
+        discussion: "The Notika, ABDiff, and Gunship adapters run owned development workflows; run executes generic explicitly leased commands.",
         version: AgentBuild.version,
-        subcommands: [DoctorCommand.self, RunCommand.self, NotikaCommand.self, ABDiffCommand.self, NativeWorkerCommand.self,
+        subcommands: [DoctorCommand.self, RunCommand.self, NotikaCommand.self, ABDiffCommand.self, GunshipCommand.self, NativeWorkerCommand.self,
                       NotikaDocPreviewCommand.self]
     )
 }

@@ -1,3 +1,4 @@
+import AgentBuildCLISupport
 import AgentBuildCore
 import ArgumentParser
 import Foundation

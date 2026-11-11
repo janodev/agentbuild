@@ -1,4 +1,5 @@
 import AgentBuildCore
+import AgentBuildTestSupport
 import AgentLeaseCore
 import Darwin
 import Foundation
@@ -74,7 +75,7 @@ private struct CapturedPhaseFixture: Sendable {
         var canonical = [CChar](repeating: 0, count: Int(PATH_MAX))
         guard realpath(temporary.path, &canonical) != nil else { throw Failure.systemCall(errno) }
         root = String(decoding: canonical.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let repository = AgentBuildTestPaths.packageRoot
         helper = repository.appendingPathComponent(".build/debug/agentbuild").path
     }
 

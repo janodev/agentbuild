@@ -1,7 +1,7 @@
 import AgentLeaseCore
 import Foundation
 
-public enum NotikaNativeRetirementEvidence: String, Codable, Sendable {
+public enum NativeRetirementEvidence: String, Codable, Sendable {
     case notStarted
     case workerReaped
     case groupQuiescentWithoutReceipt
@@ -9,10 +9,10 @@ public enum NotikaNativeRetirementEvidence: String, Codable, Sendable {
 
 /// Missing helper receipts remain missing native observations, even after
 /// independent group quiescence permits releasing the retained lock references.
-public struct NotikaNativeObservation: Sendable {
+public struct NativeObservation: Sendable {
     public let processIdentifier: Int32?
     public let termination: RunTermination?
-    public let retirement: NotikaNativeRetirementEvidence
+    public let retirement: NativeRetirementEvidence
     public let cancelled: Bool
     public let failures: [DarwinWorkloadFailure]
     public let worker: DarwinWorkloadResult?
@@ -61,14 +61,14 @@ public struct NotikaNativeObservation: Sendable {
 public final class CapturedNativePhase: Sendable {
     public let command: DarwinWorkloadCommand
     public let workingDirectoryIdentity: NativeWorkingDirectoryIdentity?
-    public let observation: NotikaNativeObservation
+    public let observation: NativeObservation
     public let rawCapture: NativeLogCaptureResult
     private let retainedCapture: NativeLogCapture
 
     fileprivate init(command: DarwinWorkloadCommand, helper: NativePhaseResult, capture: NativeLogCapture, result: NativeLogCaptureResult) {
         self.command = command
         workingDirectoryIdentity = helper.workingDirectoryIdentity
-        observation = NotikaNativeObservation(helper: helper, capture: result, cancelled: Task.isCancelled)
+        observation = NativeObservation(helper: helper, capture: result, cancelled: Task.isCancelled)
         rawCapture = result
         retainedCapture = capture
     }

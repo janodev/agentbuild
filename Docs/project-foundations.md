@@ -156,6 +156,14 @@ worker pins its leader until descendants stop, escalates cancellation, and
 reaps the leader before returning. Closing borrowed lock references never
 performs `LOCK_UN`.
 
+Gunship opts into process-session quiescence in addition to the default group
+boundary. Workers that create their own process group must exit before the native
+leader is reaped and leases are released. Cancellation signals only the pinned
+leader's group; the supervisor waits for other groups in that session rather than
+signalling reusable, unpinned PIDs. A descendant that creates another session
+remains outside this guarantee. The selected scope crosses the authenticated
+worker protocol and is retained by quarantine when helper evidence is missing.
+
 `NativePhaseSupervisor` launches a separate helper with a sole owner-pipe
 writer in the coordinator. Owner EOF makes the helper retire unfinished work.
 A nonce and request digest bind its bounded receipts. Missing receipts cannot

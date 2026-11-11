@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-internal enum ArtifactAllocatedSizeError: Error {
+package enum ArtifactAllocatedSizeError: Error {
     case unsafeEntry, evidenceChanged, traversalBoundExceeded
     case systemCall(String, Int32)
 }
@@ -9,7 +9,7 @@ internal enum ArtifactAllocatedSizeError: Error {
 /// Accounts an admitted directory using retained, nofollow descriptors. The
 /// explicit DFS stack keeps nesting off the thread stack and owns at most one
 /// descriptor per admitted depth. Symlinks are entries, never traversal roots.
-internal func artifactAllocatedSize(_ descriptor: Int32, maximumDepth: Int, maximumNodes: Int) throws -> UInt64 {
+package func artifactAllocatedSize(_ descriptor: Int32, maximumDepth: Int, maximumNodes: Int) throws -> UInt64 {
     guard maximumDepth >= 0, maximumNodes > 0 else { throw ArtifactAllocatedSizeError.traversalBoundExceeded }
     let original = try artifactSizeStatus(descriptor)
     guard original.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { throw ArtifactAllocatedSizeError.unsafeEntry }

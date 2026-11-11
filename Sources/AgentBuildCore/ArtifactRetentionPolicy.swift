@@ -42,6 +42,12 @@ public struct SessionRetentionEvaluation: Equatable, Sendable {
     public let eligibility: ArtifactRetentionEligibility
     public let effectiveExpiresAt: Date?
     public let source: SessionRetentionSource?
+
+    package init(eligibility: ArtifactRetentionEligibility, effectiveExpiresAt: Date?, source: SessionRetentionSource?) {
+        self.eligibility = eligibility
+        self.effectiveExpiresAt = effectiveExpiresAt
+        self.source = source
+    }
 }
 
 public enum ArtifactRetentionPolicyError: Error, Equatable, Sendable {
