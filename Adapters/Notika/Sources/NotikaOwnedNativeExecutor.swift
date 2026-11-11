@@ -42,6 +42,7 @@ public struct NotikaOwnedNativeExecutor: Sendable {
         identity: CacheCompatibilityIdentity,
         ownership: ProjectOwnership,
         environment: [String: String],
+        metalToolchain: String? = nil,
         compilationWaitSeconds: Double? = nil,
         execute: @escaping @Sendable (
             DarwinWorkloadCommand, NativeInvocationClaim, [Int32]
@@ -83,7 +84,7 @@ public struct NotikaOwnedNativeExecutor: Sendable {
                     from: environment, bindings: NotikaNativeEnvironmentBindings(
                         repository: identity.canonicalWorktree,
                         toolSearchPath: environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin",
-                        derivedData: cacheDirectory
+                        derivedData: cacheDirectory, metalToolchain: metalToolchain
                     )
                 )
                 let command = try DarwinWorkloadCommand(

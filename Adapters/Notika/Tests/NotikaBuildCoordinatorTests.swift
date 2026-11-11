@@ -25,6 +25,7 @@ struct NotikaBuildCoordinatorTests {
             ])
             #expect(command.environment["XCODEBUILD_FLAGS"] == nil)
             #expect(command.environment["NOTIKA_ROUTE_AUTHORITY_FD"] == nil)
+            #expect(command.environment["AGENTBUILD_METAL_TOOLCHAIN"] == "/toolchain/usr/bin/metal")
             #expect(descriptors.count == 5)
             for descriptor in descriptors { #expect(fcntl(descriptor, F_GETFD) & FD_CLOEXEC != 0) }
             try fixture.expectAllOwnersHeld(cache: cache)
@@ -833,6 +834,7 @@ private final class CoordinatorIdentityCapture: RepositoryCommandCapturing {
         if arguments.first == "/usr/bin/plutil" { return Data("{\"objects\":{}}".utf8) }
         if arguments == ["xcodebuild", "-version"] { return Data("Xcode fixture\n".utf8) }
         if arguments == ["swift", "--version"] { return Data("Swift fixture\n".utf8) }
+        if arguments == ["xcrun", "--find", "metal"] { return Data("/toolchain/usr/bin/metal\n".utf8) }
         if arguments.first == "xcrun" { return Data("27.0\n".utf8) }
         if arguments == [repository + "/Scripts/tuist", "version"] { return Data("4.210.0\n".utf8) }
         throw CoordinatorFixtureError.unexpectedCapture(arguments)

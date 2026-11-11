@@ -58,6 +58,26 @@ struct NotikaChildEnvironmentPolicyTests {
         #expect(try NotikaChildEnvironmentPolicy.nativeEnvironment(from: [:], bindings: emptyPath)["PATH"] == "/repo/Scripts:")
     }
 
+    @Test func onlyTheObservedMetalToolchainSetsItsVariable() throws {
+        let inherited = ["PATH": "/tools", "AGENTBUILD_METAL_TOOLCHAIN": "/foreign/metal"]
+        let unobserved = try NotikaNativeEnvironmentBindings(repository: "/repo", toolSearchPath: "/tools", derivedData: "/cache")
+        #expect(try NotikaChildEnvironmentPolicy.nativeEnvironment(
+            from: inherited, bindings: unobserved)["AGENTBUILD_METAL_TOOLCHAIN"] == nil)
+        let metal = "/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.2.47.0.DmzlQO"
+            + "/Metal.xctoolchain/usr/bin/metal"
+        let observed = try NotikaNativeEnvironmentBindings(repository: "/repo", toolSearchPath: "/tools",
+                                                           derivedData: "/cache", metalToolchain: metal)
+        #expect(observed != unobserved)
+        #expect(try NotikaChildEnvironmentPolicy.nativeEnvironment(from: inherited, bindings: observed) == [
+            "PATH": "/repo/Scripts:/tools", "SRCROOT": "/repo", "NOTIKA_DERIVED_DATA": "/cache",
+            "AGENTBUILD_METAL_TOOLCHAIN": metal,
+        ])
+        #expect(throws: NotikaChildEnvironmentError.invalidBinding("metalToolchain")) {
+            try NotikaNativeEnvironmentBindings(repository: "/repo", toolSearchPath: "/tools",
+                                                derivedData: "/cache", metalToolchain: "metal")
+        }
+    }
+
     @Test func simLeaseExportsAreCarriedWithoutInventingAdditionalOwnership() throws {
         let existing = ["SIMLEASE_SESSION_ID": "existing-session", "SIMULATOR_ID": "existing-id"]
         #expect(try NotikaChildEnvironmentPolicy.inheritedEnvironment(from: existing) == existing)

@@ -79,6 +79,18 @@ through a regular, nofollow descriptor. Source snapshots are sequential
 observations, not an atomic freeze or custody proof. Source drift remains
 independent of native build/test outcomes.
 
+`metalToolchainPath()` records where `xcrun --find metal` resolves the Metal
+compiler, and is nil when the compiler is unavailable. That toolchain is a
+cryptex that macOS mounts at a new path after each restart. Xcode bakes the
+mount path into the build descriptions stored in the cache, and it reuses a
+stored description when the arguments and environment match. A reused
+description then names a mount that no longer exists, and `.metal` sources
+fail to compile. Native builds and DocC therefore export the observed path as
+`AGENTBUILD_METAL_TOOLCHAIN`. A moved toolchain changes the environment, so
+Xcode computes a new description, while compiled products stay reusable. The
+path is deliberately not compatibility material: a restart must not select a
+cold cache.
+
 # Compilation phases
 
 `NotikaProjectAdmission` acquires a shared generated graph, shared cache policy,

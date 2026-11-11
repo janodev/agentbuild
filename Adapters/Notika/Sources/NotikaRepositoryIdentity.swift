@@ -144,6 +144,24 @@ public struct NotikaRepositoryIdentity: Sendable {
         return NotikaToolchainIdentity(keyMaterial: .object(["versions": .object(versions), "binaries": .object(binaries)]))
     }
 
+    /// The Metal compiler Xcode resolves now, or nil when it is unavailable.
+    /// Its toolchain is a cryptex mounted at a new path after each restart,
+    /// and Xcode bakes that path into stored build descriptions. This is not
+    /// compatibility material: a new mount must not select a cold cache.
+    public func metalToolchainPath() async throws -> String? {
+        let output: Data
+        do { output = try await command(["xcrun", "--find", "metal"]) }
+        catch let error as RepositoryCaptureError {
+            try Task.checkCancellation()
+            switch error {
+            case .commandFailed, .launchFailed: return nil
+            default: throw error
+            }
+        }
+        let path = repositoryDecodedText(output)
+        return nativeEnvironmentPath(path) ? path : nil
+    }
+
     private func command(_ arguments: [String], root: String? = nil) async throws -> Data {
         try Task.checkCancellation()
         return try await capture.capture(arguments: arguments, workingDirectory: root ?? repository,

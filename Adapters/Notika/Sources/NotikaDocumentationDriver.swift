@@ -351,9 +351,11 @@ public struct NotikaDocumentationDriver: Sendable {
                     let custody = try NotikaCacheCustody(identity: identity, ownership: ownership)
                     try custody.revalidateBeforeOperation()
                     _ = try custody.publishUsage(sessionID: runID)
+                    let metalToolchain = try await observer.metalToolchainPath()
                     let nativeEnvironment = try NotikaChildEnvironmentPolicy.nativeEnvironment(from: environment,
                         bindings: NotikaNativeEnvironmentBindings(repository: repository,
-                            toolSearchPath: environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin", derivedData: custody.cacheDirectory))
+                            toolSearchPath: environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin", derivedData: custody.cacheDirectory,
+                            metalToolchain: metalToolchain))
                     let execute: @Sendable (DocumentationStep, DarwinWorkloadCommand, [Int32]) async throws -> CapturedNativePhase = { step, command, extra in
                         try session.revalidate(); try custody.revalidateBeforeOperation(); try tools.revalidate()
                         let phase = try await operation(helper.path, command,

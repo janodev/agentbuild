@@ -187,6 +187,25 @@ struct NotikaRepositoryIdentityTests {
         await #expect(throws: CancellationError.self) { _ = try await cancelled.toolchainIdentity() }
     }
 
+    @Test func metalToolchainPathIsXcrunsAnswerOnlyWhenItIsAnAbsolutePath() async throws {
+        let fixture = try IdentityFixture()
+        defer { fixture.remove() }
+        let metal = "/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.2.47.0.DmzlQO"
+            + "/Metal.xctoolchain/usr/bin/metal"
+        func probe(_ capture: any RepositoryCommandCapturing) async throws -> String? {
+            try await NotikaRepositoryIdentity(repository: fixture.path, capture: capture).metalToolchainPath()
+        }
+        #expect(try await probe(MetalProbeCapture(output: .success(metal + "\n"))) == metal)
+        #expect(try await probe(MetalProbeCapture(output: .success("metal\n"))) == nil)
+        #expect(try await probe(MetalProbeCapture(output: .success(""))) == nil)
+        #expect(try await probe(MetalProbeCapture(output: .failure(.commandFailed(
+            executable: "xcrun", exitCode: 72, diagnostic: "unable to find utility \"metal\"")))) == nil)
+        await #expect(throws: RepositoryCaptureError.outputLimitExceeded) {
+            _ = try await probe(MetalProbeCapture(output: .failure(.outputLimitExceeded)))
+        }
+        await #expect(throws: CancellationError.self) { _ = try await probe(CancelledIdentityCapture()) }
+    }
+
     @Test func invalidUTF8StatusPathCannotBecomeReplacementHashMaterial() async throws {
         let fixture = try IdentityFixture()
         defer { fixture.remove() }
@@ -294,6 +313,14 @@ private struct ToolchainOracleCapture: RepositoryCommandCapturing {
         case [repository + "/Scripts/tuist", "version"]: return Data("4.210.0\n".utf8)
         default: throw IdentityFixtureError.unexpectedProbe
         }
+    }
+}
+
+private struct MetalProbeCapture: RepositoryCommandCapturing {
+    let output: Result<String, RepositoryCaptureError>
+    func capture(arguments: [String], workingDirectory: String, environment: [String: String]) async throws -> Data {
+        guard arguments == ["xcrun", "--find", "metal"] else { throw IdentityFixtureError.unexpectedProbe }
+        return Data(try output.get().utf8)
     }
 }
 

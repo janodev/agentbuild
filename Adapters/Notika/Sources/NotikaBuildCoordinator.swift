@@ -408,9 +408,11 @@ public struct NotikaBuildCoordinator: Sendable {
                                     toolchainBeforeHash: toolchain.digest(), leaseSessionID: lease.sessionID
                                 )
                             } else { performance = nil }
+                            let metalToolchain = try await observer.metalToolchainPath()
                             let outcome = try await NotikaOwnedNativeExecutor().run(
                                 plan, identity: identity, ownership: ownership,
-                                environment: environment, compilationWaitSeconds: waitSeconds
+                                environment: environment, metalToolchain: metalToolchain,
+                                compilationWaitSeconds: waitSeconds
                             ) { command, claim, descriptors in
                                 try outerHostLease?.revalidate()
                                 try custody.revalidateBeforeOperation()

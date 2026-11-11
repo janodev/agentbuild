@@ -18,13 +18,15 @@ struct NotikaOwnedNativeExecutorTests {
                 fixture.plan, identity: fixture.identity, ownership: ownership,
                 environment: fixture.base.environment.merging([
                     "NOTIKA_DERIVED_DATA": "/wrong-cache", "NOTIKA_ROUTE_AUTHORITY_FD": "5",
-                    "XCODEBUILD_FLAGS": "-scheme unadmitted",
-                ]) { _, supplied in supplied }
+                    "XCODEBUILD_FLAGS": "-scheme unadmitted", "AGENTBUILD_METAL_TOOLCHAIN": "/foreign/metal",
+                ]) { _, supplied in supplied },
+                metalToolchain: "/toolchain/usr/bin/metal"
             ) { command, claim, descriptors in
                 #expect(command.executable == "/usr/bin/xcodebuild")
                 #expect(command.arguments == claim.phase.arguments)
                 #expect(command.workingDirectory == fixture.base.directory.path)
                 #expect(command.environment["NOTIKA_DERIVED_DATA"] == fixture.ownershipPlan.cacheDirectory)
+                #expect(command.environment["AGENTBUILD_METAL_TOOLCHAIN"] == "/toolchain/usr/bin/metal")
                 #expect(command.environment["NOTIKA_ROUTE_AUTHORITY_FD"] == nil)
                 #expect(command.environment["XCODEBUILD_FLAGS"] == nil)
                 #expect(command.environment["PATH"]?.hasPrefix(fixture.base.directory.path + "/Scripts:") == true)
