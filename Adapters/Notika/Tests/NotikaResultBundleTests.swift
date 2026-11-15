@@ -8,6 +8,57 @@ import Testing
 
 @Suite("Notika result custody and observed test counts")
 struct NotikaResultBundleTests {
+    @Test func retainedPayloadAdmitsRealAccessTimeEventsButStandaloneWatchesStayStrict() throws {
+        let fixture = try ResultFixture()
+        defer { fixture.remove() }
+        let reservation = try fixture.reserve()
+        try fixture.createResult()
+        let bundle = try fixture.admit(reservation)
+        let descriptor = open(fixture.evidence.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        try #require(descriptor >= 0)
+        defer { _ = Darwin.close(descriptor) }
+        let strictWatch = try ResultMutationWatch()
+        try strictWatch.arm(descriptor, writes: true)
+        let before = try resultDescriptorIdentity(descriptor)
+        try resultSetAccessTime(fixture.evidence.path)
+        #expect(try resultDescriptorIdentity(descriptor) == before)
+        // Prove this real syscall emitted an event; an ordinary read alone
+        // could pass without exercising the access-time notification policy.
+        #expect(throws: ResultBundleFailure.self) { try strictWatch.check() }
+        try bundle.revalidateForPublication()
+        try bundle.revalidateForPublication()
+    }
+
+    @Test(arguments: ["chmod", "flags", "write", "replace", "directory"])
+    func accessTimeNotificationsNeverMaskSubstantiveOrRestoredChanges(_ mutation: String) throws {
+        let fixture = try ResultFixture()
+        defer { fixture.remove() }
+        let reservation = try fixture.reserve()
+        try fixture.createResult()
+        let bundle = try fixture.admit(reservation)
+        let bytes = try Data(contentsOf: fixture.evidence)
+        try resultSetAccessTime(fixture.evidence.path)
+        switch mutation {
+        case "chmod":
+            try #require(chmod(fixture.evidence.path, 0o640) == 0)
+            try #require(chmod(fixture.evidence.path, 0o600) == 0)
+        case "flags":
+            try #require(chflags(fixture.evidence.path, UInt32(UF_HIDDEN)) == 0)
+            try #require(chflags(fixture.evidence.path, 0) == 0)
+        case "write":
+            try Data("changed".utf8).write(to: fixture.evidence)
+            try bytes.write(to: fixture.evidence)
+        case "replace":
+            try FileManager.default.moveItem(at: fixture.evidence, to: fixture.result.appendingPathComponent("Data/old"))
+            try bytes.write(to: fixture.evidence)
+            try #require(chmod(fixture.evidence.path, 0o600) == 0)
+        case "directory": try resultSetAccessTime(fixture.result.appendingPathComponent("Data").path)
+        default: Issue.record("Unknown mutation")
+        }
+        #expect(throws: ResultBundleFailure.self) { try bundle.revalidateForPublication() }
+        #expect(throws: ResultBundleFailure.self) { try bundle.revalidateForPublication() }
+    }
+
     @Suite("Large retained result trees", .serialized)
     struct DescriptorCapacity {
         @Test func descriptorBudgetPreservesHardLimitsAndNeverLowersCapacity() throws {
@@ -702,4 +753,15 @@ private struct ResultFixture: Sendable {
     }
 
     func remove() { try? FileManager.default.removeItem(at: repository) }
+}
+
+private func resultSetAccessTime(_ path: String) throws {
+    var attributes = attrlist()
+    attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+    attributes.commonattr = attrgroup_t(ATTR_CMN_ACCTIME)
+    var accessTime = timespec(tv_sec: 100, tv_nsec: 0)
+    try #require(setattrlist(path, &attributes, &accessTime, MemoryLayout<timespec>.size, 0) == 0)
+    var status = stat()
+    try #require(lstat(path, &status) == 0)
+    try #require(status.st_atimespec.tv_sec == 100)
 }

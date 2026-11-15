@@ -85,6 +85,17 @@ SQLite indexes at the result root. A supervised preparation phase permits only
 those fixed index additions while watching the original payload. After it
 finishes, the driver seals the complete result tree and reuses that captured
 summary. Later result consumers must leave the sealed evidence unchanged.
+A pure `NOTE_ATTRIB` on a retained regular result file is admitted only while
+every pinned tree name and complete non-access fingerprint remains identical:
+inode/device, owner/group, mode, links, size, flags, generation, and nanosecond
+modification, change and birth times. Darwin access-time-only updates can emit
+that notification without changing ctime. Directory notifications, mixed events,
+writes, replacement and restored permission changes remain sticky failures;
+other mutation-watch users keep strict event admission.
+Diagnostic publication withdraws result and consumer admission and clears the
+consumer success claim while retaining native outcomes, test counts, source
+observations, consumer captures and report metadata. Admitted publication still
+requires the original consumer success proof and live result authority.
 Ordinary result trees admit at most 4,096 nodes, 1 GiB and depth 64. Every node
 still retains its descriptor, identity, content hash and sticky mutation watch.
 Before preparation or direct admission, the controller ensures a process soft

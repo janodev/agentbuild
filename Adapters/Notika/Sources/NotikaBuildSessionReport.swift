@@ -461,7 +461,8 @@ public struct NotikaBuildSessionReport: Sendable {
         let resultValue = try sessionResultEvidenceValue(evidence?.resultSummary,
             admitCaptures: admitCaptures, allowFixtureCommands: allowFixtureCommands)
         let resultPreparationValue = try sessionResultPreparationValue(evidence?.resultPreparation)
-        let consumerValue = try sessionAncillaryValue(evidence?.resultConsumer?.canonicalValue,
+        let consumerValue = try sessionAncillaryValue(sessionConsumerProjection(evidence?.resultConsumer?.canonicalValue,
+            admitted: admitCaptures),
             admitted: admitCaptures, allowFixtureCommands: allowFixtureCommands)
         let performanceValue = try sessionAncillaryValue(evidence?.performanceEvidence?.canonicalValue,
             admitted: admitCaptures, allowFixtureCommands: allowFixtureCommands)
@@ -842,6 +843,18 @@ private func sessionRequiresPerformance(_ request: NotikaActionRequest) -> Bool 
     request.canonicalMakeRoute.map {
         [.testTextInputHeavyDependencyPerformance, .testCanvasFramePacingPerformance].contains($0)
     } == true
+}
+
+/// A diagnostic result retains consumer observations without asserting success
+/// after the result directory authority required by that proof is withdrawn.
+private func sessionConsumerProjection(
+    _ value: CanonicalJSONValue?, admitted: Bool
+) -> CanonicalJSONValue? {
+    guard !admitted, let value, case .object(let fields) = value else { return value }
+    return .object(fields.map { member in
+        member.key == "successfulConsumption"
+            ? CanonicalJSONMember(key: member.key, value: .bool(false)) : member
+    })
 }
 
 private func sessionAncillaryValue(

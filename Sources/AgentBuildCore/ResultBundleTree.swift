@@ -14,6 +14,10 @@ package struct ResultNodeIdentity: Equatable, Sendable {
     package let modifiedNanoseconds: Int64
     package let changedSeconds: Int64
     package let changedNanoseconds: Int64
+    package let flags: UInt32
+    package let generation: UInt32
+    package let birthSeconds: Int64
+    package let birthNanoseconds: Int64
 
     package init(_ status: stat) {
         device = Int64(status.st_dev); inode = UInt64(status.st_ino); size = Int64(status.st_size)
@@ -21,6 +25,8 @@ package struct ResultNodeIdentity: Equatable, Sendable {
         links = UInt64(status.st_nlink)
         modifiedSeconds = Int64(status.st_mtimespec.tv_sec); modifiedNanoseconds = Int64(status.st_mtimespec.tv_nsec)
         changedSeconds = Int64(status.st_ctimespec.tv_sec); changedNanoseconds = Int64(status.st_ctimespec.tv_nsec)
+        flags = status.st_flags; generation = status.st_gen
+        birthSeconds = Int64(status.st_birthtimespec.tv_sec); birthNanoseconds = Int64(status.st_birthtimespec.tv_nsec)
     }
 
     package var directory: Bool { mode & UInt16(S_IFMT) == UInt16(S_IFDIR) }
@@ -39,6 +45,16 @@ package final class ResultMutationWatch {
     package let descriptor: Int32
     private var failure: ResultBundleFailure?
     private var labels: [UInt: String] = [:]
+    private var retainedNodes: [RetainedResultNode] = []
+    private var allowsRootSQLitePreparation = false
+
+    /// Only retained trees opt in. Other users keep strict vnode admission.
+    fileprivate func admitAccessTimeNotifications(
+        nodes: [RetainedResultNode], allowsRootSQLitePreparation: Bool
+    ) {
+        retainedNodes = nodes
+        self.allowsRootSQLitePreparation = allowsRootSQLitePreparation
+    }
 
     package init() throws {
         let queue = kqueue()
@@ -66,18 +82,33 @@ package final class ResultMutationWatch {
 
     package func check() throws {
         if let failure { throw failure }
-        var event = kevent()
-        var timeout = timespec(tv_sec: 0, tv_nsec: 0)
-        var count: Int32
-        repeat { count = resultKevent(descriptor, nil, 0, &event, 1, &timeout) } while count < 0 && errno == EINTR
-        if count < 0 {
-            let failure = resultFailure("poll result watch")
-            self.failure = failure
-            throw failure
-        }
-        if count > 0 {
+        while true {
+            var event = kevent()
+            var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+            var count: Int32
+            repeat { count = resultKevent(descriptor, nil, 0, &event, 1, &timeout) } while count < 0 && errno == EINTR
+            if count < 0 {
+                let failure = resultFailure("poll result watch")
+                self.failure = failure
+                throw failure
+            }
+            guard count > 0 else { return }
+            if event.flags & UInt16(EV_ERROR) == 0, event.fflags == UInt32(NOTE_ATTRIB),
+               retainedNodes.contains(where: { UInt($0.descriptor) == event.ident && $0.identity.regular }) {
+                do {
+                    // Darwin access-time-only setattrlist emits NOTE_ATTRIB
+                    // without changing ctime. Freeze every other identity field
+                    // and every pinned name; restored chmod still changes ctime.
+                    try ResultBundleTree.validateBindings(retainedNodes,
+                        allowsRootSQLitePreparation: allowsRootSQLitePreparation)
+                } catch let failure as ResultBundleFailure {
+                    self.failure = failure
+                    throw failure
+                }
+                continue
+            }
             let failure = ResultBundleFailure(operation: "result artifact mutated", code: ESTALE,
-                                                     detail: "vnode event \(event.fflags) on \(labels[event.ident] ?? "descriptor \(event.ident)")")
+                detail: "vnode event \(event.fflags) on \(labels[event.ident] ?? "descriptor \(event.ident)")")
             self.failure = failure
             throw failure
         }
@@ -185,6 +216,7 @@ package final class ResultBundleTree {
                                                      detail: requiredRootFile)
                 }
             }
+            watch.admitAccessTimeNotifications(nodes: nodes, allowsRootSQLitePreparation: allowsRootSQLitePreparation)
             try watch.check()
             let digest = try Self.digest(nodes)
             self.root = nodes[0].descriptor
@@ -203,6 +235,19 @@ package final class ResultBundleTree {
 
     package func revalidate() throws {
         try watch.check()
+        try Self.validateBindings(nodes, allowsRootSQLitePreparation: allowsRootSQLitePreparation)
+        for node in nodes {
+            if let digest = node.sha256,
+               try Self.hashFile(node.descriptor, identity: node.identity) != digest {
+                throw ResultBundleFailure(operation: "result content changed", code: ESTALE, detail: node.path)
+            }
+        }
+        try watch.check()
+    }
+
+    fileprivate static func validateBindings(
+        _ nodes: [RetainedResultNode], allowsRootSQLitePreparation: Bool
+    ) throws {
         for node in nodes {
             let status = try resultDescriptorIdentity(node.descriptor)
             let entry = try resultEntryIdentity(node.parent, node.name)
@@ -212,12 +257,7 @@ package final class ResultBundleTree {
             guard unchanged else {
                 throw ResultBundleFailure(operation: "result entry changed", code: ESTALE, detail: node.path)
             }
-            if let digest = node.sha256,
-               try Self.hashFile(node.descriptor, identity: node.identity) != digest {
-                throw ResultBundleFailure(operation: "result content changed", code: ESTALE, detail: node.path)
-            }
         }
-        try watch.check()
     }
 
     /// xcresulttool creates its SQLite index on its first read. During that

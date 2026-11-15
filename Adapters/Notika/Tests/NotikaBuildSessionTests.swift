@@ -475,6 +475,78 @@ struct NotikaBuildSessionTests {
         }
     }
 
+    @Test func diagnosticFallbackDemotesSuccessfulConsumerAndRetainsObservedEvidence() async throws {
+        let fixture = try BuildSessionFixture()
+        defer { fixture.remove() }
+        let request = try NotikaActionRequest(makeRoute: .coverageJSON)
+        let outer = try buildSessionOuter(.macOS)
+        let report = try await fixture.withSession(request: request, outerLeaseEvidence: outer) { session in
+            let observed = try await fixture.unitEvidence(session)
+            let summary = try #require(observed.resultSummary)
+            let descriptors = try session.inheritedDescriptors()
+            let consumer = await NotikaResultConsumers(summary: summary).runForTrustedFixture(
+                environment: ["PATH": "/usr/bin:/bin"]
+            ) { command, directory in
+                try await CapturedNativePhaseRunner().run(
+                    helperExecutable: AgentBuildTestPaths.packageRoot.appendingPathComponent(".build/debug/agentbuild").path,
+                    command: DarwinWorkloadCommand(executable: "/bin/sh", arguments: ["-c", "printf '{\"targets\":[]}'"],
+                        workingDirectory: command.workingDirectory, environment: command.environment),
+                    retainedLockDescriptors: descriptors, nativeWorkingDirectoryDescriptor: directory, artifactRoot: session.path)
+            }
+            try #require(consumer.provesSuccessfulConsumption)
+            let evidence = NotikaBuildSessionTerminalEvidence(sourceBefore: observed.sourceBefore, sourceAfter: observed.sourceAfter,
+                toolchainBefore: observed.toolchainBefore, toolchainAfter: observed.toolchainAfter,
+                compatibilityIdentity: observed.compatibilityIdentity, plan: observed.plan, outcome: observed.outcome,
+                capturedPhases: observed.capturedPhases, resultSummary: summary, resultConsumer: consumer)
+            // Result custody fails after a real permission change is restored.
+            // The already observed successful consumer must remain diagnostic.
+            let payload = summary.resultBundle.custody.resultPath + "/Data/evidence"
+            try #require(chmod(payload, 0o640) == 0)
+            try #require(chmod(payload, 0o600) == 0)
+            #expect(throws: (any Error).self) {
+                try session.publishTerminalForTrustedFixture(evidence, completedAt: fixture.completedAt)
+            }
+            let report = try session.publishDiagnosticTerminal(evidence, publicationFailure: "result custody changed",
+                completedAt: fixture.completedAt)
+            let wrapper = try #require(buildSessionMember(report.canonicalValue, "resultConsumer"))
+            let projected = try #require(buildSessionMember(wrapper, "evidence"))
+            #expect(buildSessionMember(wrapper, "publicationAdmitted") == .bool(false))
+            #expect(buildSessionMember(projected, "successfulConsumption") == .bool(false))
+            let original = try consumer.canonicalValue
+            for field in ["captures", "reports", "failures", "resultReceiptSHA256"] {
+                let projectedValue = try #require(buildSessionMember(projected, field))
+                let originalValue = try #require(buildSessionMember(original, field))
+                #expect(try CanonicalJSONDigest.encode(projectedValue) == CanonicalJSONDigest.encode(originalValue))
+            }
+            try session.revalidateTerminal()
+            return report
+        }
+        #expect(report.status == "inconclusive")
+        #expect(report.exitCode == 70)
+        #expect(report.nativeTermination == RunTermination(kind: .exit, value: 0))
+        let result = try #require(buildSessionMember(report.canonicalValue, "resultEvidence"))
+        let tests = try #require(buildSessionMember(result, "tests"))
+        #expect(buildSessionMember(tests, "executed") == .unsignedInteger(3))
+        #expect(buildSessionMember(result, "publicationAdmitted") == .bool(false))
+        for field in ["sourceBefore", "sourceAfter", "toolchainBefore", "toolchainAfter", "phaseObservations", "rawLogReports"] {
+            let value = try #require(buildSessionMember(report.canonicalValue, field))
+            #expect(value != .null)
+        }
+        // Recommitting a success claim still fails the ordinary strict proof
+        // validator because diagnostic result admission supplies no authority.
+        let wrapper = try #require(buildSessionMember(report.canonicalValue, "resultConsumer"))
+        let projected = try #require(buildSessionMember(wrapper, "evidence"))
+        let forgedConsumer = buildSessionUpdated(wrapper, "evidence",
+            buildSessionUpdated(projected, "successfulConsumption", .bool(true)))
+        let commitments = try #require(buildSessionMember(report.canonicalValue, "commitments"))
+        let forged = buildSessionUpdated(buildSessionUpdated(report.canonicalValue, "resultConsumer", forgedConsumer),
+            "commitments", buildSessionUpdated(commitments, "resultConsumerSHA256",
+                .string(try CanonicalJSONDigest.sha256(forgedConsumer))))
+        #expect(throws: (any Error).self) { try NotikaBuildSessionReport(data: CanonicalJSONDigest.encode(forged)) }
+        let roundTrip = try NotikaBuildSessionReport(data: report.originalData)
+        #expect(roundTrip.nativeTermination == report.nativeTermination)
+    }
+
     @Test func diagnosticUnitFallbackMarksResultAndProbeUnadmitted() async throws {
         let fixture = try BuildSessionFixture()
         defer { fixture.remove() }
