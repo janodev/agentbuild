@@ -195,3 +195,7 @@ See the [documentation index](Docs/index.md) and [design contract](Docs/design.m
 for ownership, evidence, and project-adapter boundaries. Implemented route
 coverage is distinct from a claim that every native workflow has been executed
 in a particular validation batch.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
