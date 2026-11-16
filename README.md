@@ -1,30 +1,22 @@
-# agentbuild
+# AgentBuild
 
-`agentbuild` 0.3 is a standalone Swift CLI and Notika's integrated development
-controller. Notika's public Make targets dispatch to its closed 54-route native
-catalog: macOS and leased iPad Simulator builds/tests, focused batches,
-result/coverage consumers, fixed performance workloads, and semantic replay.
-Generation, exact-product macOS launch, DocC, direct Rust tests, preflight, and
-today-only cache/session maintenance are Swift-owned workflows. The former
-Python controller remains a test behavior reference without a live fallback.
+AgentBuild 0.3 is a Swift build driver that runs supported project workflows,
+coordinates shared resources, and saves logs and results.
 
-ABDiff has a separate native adapter for Tuist generation, macOS and iPad builds
-and tests, and supervised application launch. It shares compilation admission
-and native supervision with Notika while retaining its own project profiles and
-artifacts. See [ABDiff workflows](Docs/abdiff-workflows.md).
+Supported projects:
 
-Gunship has an Unreal adapter for editor and game compilation, headless
-automation, cooking and packaging, and packaged gameplay validation. Only
-Unreal Build Tool compilation holds the shared compilation gate. See
-[Gunship workflows](Docs/gunship-workflows.md).
+- **[Notika](Docs/notika-workflows.md).** macOS and iPad Simulator builds and tests, project generation, app launch, DocC, Rust tests, performance checks, and cache/session cleanup.
+- **[ABDiff](Docs/abdiff-workflows.md).** Tuist generation, macOS and iPad builds and tests, and supervised app launch.
+- **[Gunship](Docs/gunship-workflows.md).** Unreal editor/game builds, automation, cooking, packaging, and gameplay validation. Its compilation gate covers Unreal Build Tool phases.
 
-The core preserves literal arguments, explicit resource ownership, per-stream
-and combined raw logs, actual native outcomes, and source/result evidence boundaries.
-Each project adapter has its own SwiftPM target and tests under `Adapters/`;
-they link with the shared core into one executable. See
-[Adapter modules](Docs/adapter-modules.md) for the source layout and dependency rules.
-See the [project foundations](Docs/project-foundations.md) for ownership,
-process retirement, raw-log custody, and source/result evidence boundaries.
+Shared capabilities:
+
+- **Resource ownership.** Coordinate access to generated projects, build caches, and compilation resources.
+- **Execution evidence.** Preserve exact arguments, raw logs, and native exit status.
+- **Shared implementation.** Each adapter owns its commands and artifacts while sharing the execution core.
+
+See [adapter modules](Docs/adapter-modules.md) for extension guidance and
+[project foundations](Docs/project-foundations.md) for ownership and evidence rules.
 
 ## Companion tools
 
