@@ -1,11 +1,3 @@
----
-okf_version: "0.1"
-type: Documentation Index
-title: agentbuild documentation
-description: Links development, execution, project-adapter, and retention references for agentbuild.
-tags: [development, build, documentation]
----
-
 # agentbuild documentation
 
 - [Project overview](../README.md) - A Swift command-line foundation for coordinated agent build workflows.

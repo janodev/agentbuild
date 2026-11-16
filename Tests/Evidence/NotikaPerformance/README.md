@@ -1,10 +1,3 @@
----
-type: Reference
-title: Notika performance summary oracles
-description: Provenance for independent raw and summary fixtures used to validate the Swift performance interpreter.
-tags: [notika, performance, testing, evidence]
----
-
 # Notika performance summary oracles
 
 The heavy and light raw reports and matching summaries come from Notika's

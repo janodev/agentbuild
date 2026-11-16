@@ -1,10 +1,3 @@
----
-type: Project
-title: agentbuild
-description: A Swift CLI for owned Notika, ABDiff, and Gunship development, leased commands, durable raw logs, and native outcome evidence.
-tags: [swift, cli, builds, agentlease]
----
-
 # agentbuild
 
 These projects work together to coordinate coding agents on one Mac:

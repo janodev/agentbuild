@@ -1,10 +1,3 @@
----
-type: Development Reference
-title: Gunship development workflows
-description: Describes the Gunship Unreal adapter, its compilation boundary, desktop lease, and native evidence.
-tags: [gunship, unreal, testing, agentlease, workflows]
----
-
 # Commands
 
 ```sh

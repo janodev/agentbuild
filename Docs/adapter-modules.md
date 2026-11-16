@@ -1,10 +1,3 @@
----
-type: Architecture
-title: Adapter modules
-description: Defines SwiftPM module ownership, shared APIs, tests, and single-executable linking for project adapters.
-tags: [architecture, swiftpm, adapters, testing]
----
-
 # Module ownership
 
 The root `Package.swift` builds one `agentbuild` executable from shared targets

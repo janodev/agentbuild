@@ -1,10 +1,3 @@
----
-type: Development Reference
-title: ABDiff development workflows
-description: Describes the ABDiff adapter, literal Make dispatch, compilation ownership, and native evidence.
-tags: [abdiff, xcode, testing, agentlease, workflows]
----
-
 # Commands
 
 ```sh

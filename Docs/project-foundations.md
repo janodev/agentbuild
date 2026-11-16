@@ -1,10 +1,3 @@
----
-type: Implementation Contract
-title: Project workflow foundations
-description: Defines the integrated Notika controller's request, identity, compilation, lifecycle, publication, and retention boundaries.
-tags: [notika, agentlease, xcode, cache, retention, testing]
----
-
 # Adoption boundary
 
 The 0.3 Notika adapter adopts these components for all 54 closed native routes,

@@ -1,10 +1,3 @@
----
-type: Architecture
-title: agentbuild design contract
-description: Integrated Swift execution, ownership, outcome, and evidence boundaries for generic commands and project development.
-tags: [architecture, subprocess, agentlease, testing]
----
-
 # Integrated controller
 
 `agentbuild` separates a Swift core, shared CLI support, and independent Notika,
