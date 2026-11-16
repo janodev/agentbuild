@@ -7,6 +7,19 @@ tags: [swift, cli, builds, agentlease]
 
 # agentbuild
 
+These projects work together to coordinate coding agents on one Mac:
+
+- [AgentBuild](https://github.com/janodev/agentbuild) orchestrates project builds and tests, reuses caches, and saves execution evidence.
+- [AgentLease](https://github.com/janodev/agentlease) coordinates shared and exclusive access to named resources.
+- [SimLease](https://github.com/janodev/simlease) provides disposable Simulator sessions and exclusive macOS UI access.
+- [SimSlim](https://github.com/janodev/simslim) reduces Simulator overhead by disabling unneeded background services.
+
+AgentBuild uses AgentLease for shared build resources and SimLease for Simulator
+and macOS UI workflows. Selected Simulator routes also apply SimSlim to their
+leased device. AgentLease, SimLease, and SimSlim can each be used independently.
+
+---
+
 `agentbuild` 0.3 is a standalone Swift CLI and Notika's integrated development
 controller. Notika's public Make targets dispatch to its closed 54-route native
 catalog: macOS and leased iPad Simulator builds/tests, focused batches,
