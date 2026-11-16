@@ -1,3 +1,10 @@
+---
+type: Contract
+title: Notika daily cleanup
+description: Defines today-only inactive Xcode/Rust cache and admitted session collection under real exclusive ownership.
+tags: [notika, cache, retention, agentlease, trash]
+---
+
 # Commands
 
 ```sh

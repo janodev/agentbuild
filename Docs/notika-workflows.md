@@ -1,3 +1,11 @@
+---
+type: Development Reference
+title: Notika development workflows
+description: Describes Swift-controlled Make routes, native execution, result evidence, and supervised interactive sessions.
+tags: [notika, xcode, testing, agentlease, workflows]
+status: implemented
+---
+
 # Commands
 
 ```sh

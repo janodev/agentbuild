@@ -1,3 +1,10 @@
+---
+type: Contract
+title: Owned command execution
+description: Defines generic command ownership, cancellation, log persistence, and truthful outcome boundaries.
+tags: [agentlease, subprocess, execution, evidence, testing]
+---
+
 # Invocation
 
 ```sh

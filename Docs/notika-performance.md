@@ -1,3 +1,10 @@
+---
+type: Reference
+title: Notika performance evidence
+description: Fixed native performance acceptance and retained attachment interpretation in the Swift controller.
+tags: [notika, performance, evidence, development]
+---
+
 # Notika performance evidence
 
 The two performance routes preserve the existing fixed workloads. Native Xcode

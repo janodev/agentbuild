@@ -1,3 +1,10 @@
+---
+type: Agent Instructions
+title: agentbuild development instructions
+description: Scope, compilation coordination, and validation requirements for the Swift CLI.
+tags: [development, agents, testing]
+---
+
 # Development
 
 - Start with `Docs/index.md` and `Docs/design.md`.
@@ -19,4 +26,4 @@
   artifacts separate from Notika's historical cache and evidence schemas.
 - Install a copied release binary at `~/Developer/tools/agentbuild`. Never point
   the installed command into `.build`.
-- Keep documentation in plain Markdown without YAML frontmatter.
+- Use OKF metadata for documentation, following the existing documents.
