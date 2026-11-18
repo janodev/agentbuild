@@ -17,9 +17,9 @@ public protocol ArtifactTrashOperator: Sendable {
     func moveToTrash(_ source: ArtifactTrashSource) async throws
 }
 
-/// Minted internally by domain collectors after their real ownership and
-/// evidence admission. This capability has no public constructor. Its retained
-/// directory is the private claim, never an untrusted original pathname.
+/// Created by trusted domain collectors after their real ownership and evidence
+/// admission. Its retained directory is the private claim, never an untrusted
+/// original pathname. Construction does not establish eligibility or ownership.
 public final class ArtifactTrashSource: Sendable {
     public var path: String { directory.path }
     public let originalPath: String
@@ -28,7 +28,7 @@ public final class ArtifactTrashSource: Sendable {
     private let revalidation: @Sendable () throws -> Void
     private let live = Mutex(true)
 
-    package init(
+    public init(
         directory: RetainedArtifactDirectory, originalPath: String,
         inheritedDescriptors: [Int32], revalidate: @escaping @Sendable () throws -> Void
     ) {
@@ -52,7 +52,7 @@ public final class ArtifactTrashSource: Sendable {
         }
     }
 
-    package func retire() { live.withLock { $0 = false } }
+    public func retire() { live.withLock { $0 = false } }
 
     private func validate() throws {
         try directory.revalidate()

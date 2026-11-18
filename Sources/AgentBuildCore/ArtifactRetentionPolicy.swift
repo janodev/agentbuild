@@ -43,7 +43,7 @@ public struct SessionRetentionEvaluation: Equatable, Sendable {
     public let effectiveExpiresAt: Date?
     public let source: SessionRetentionSource?
 
-    package init(eligibility: ArtifactRetentionEligibility, effectiveExpiresAt: Date?, source: SessionRetentionSource?) {
+    public init(eligibility: ArtifactRetentionEligibility, effectiveExpiresAt: Date?, source: SessionRetentionSource?) {
         self.eligibility = eligibility
         self.effectiveExpiresAt = effectiveExpiresAt
         self.source = source

@@ -4,7 +4,7 @@ import Synchronization
 
 /// Dispatch sources and saved handlers are initialized once and never mutated.
 /// The mutex serializes receipt and restoration; the stream continuation is Sendable.
-package final class SignalRelay: @unchecked Sendable {
+public final class SignalRelay: @unchecked Sendable {
     enum RelayError: Error {
         case systemCall(operation: String, signal: Int32, errorNumber: Int32)
     }
@@ -20,7 +20,7 @@ package final class SignalRelay: @unchecked Sendable {
     private let state = Mutex(State())
     private let stream: AsyncStream<Int32>
 
-    package init(signals: [Int32] = [SIGINT, SIGTERM, SIGHUP]) throws {
+    public init(signals: [Int32] = [SIGINT, SIGTERM, SIGHUP]) throws {
         let pair = AsyncStream.makeStream(of: Int32.self)
         stream = pair.stream
         continuation = pair.continuation
@@ -60,9 +60,9 @@ package final class SignalRelay: @unchecked Sendable {
 
     deinit { restore() }
 
-    package var firstSignal: Int32? { state.withLock { $0.firstSignal } }
+    public var firstSignal: Int32? { state.withLock { $0.firstSignal } }
 
-    package func nextSignal() async -> Int32? {
+    public func nextSignal() async -> Int32? {
         await withTaskCancellationHandler {
             for await number in stream { return number }
             return nil
@@ -71,7 +71,7 @@ package final class SignalRelay: @unchecked Sendable {
         }
     }
 
-    package func restore() {
+    public func restore() {
         let shouldRestore = state.withLock { state in
             guard !state.restored else { return false }
             state.restored = true

@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-package enum RepositorySourceSnapshotError: Error, Sendable {
+public enum RepositorySourceSnapshotError: Error, Sendable {
     case invalidRequest(String)
     case changedInput(String)
     case evidence(String)
@@ -11,12 +11,12 @@ package enum RepositorySourceSnapshotError: Error, Sendable {
 
 /// Sequential source observations. Allowances affect the comparison used for
 /// the outcome, while raw observations and allowed-file hashes remain evidence.
-package struct RepositorySourceSnapshot: Sendable {
-    package let raw: [String: String]
-    package let comparison: [String: String]
-    package let allowedFileHashes: [String: String]
+public struct RepositorySourceSnapshot: Sendable {
+    public let raw: [String: String]
+    public let comparison: [String: String]
+    public let allowedFileHashes: [String: String]
 
-    package static func validatedAllowedPaths(_ paths: [String]) throws -> [String] {
+    public static func validatedAllowedPaths(_ paths: [String]) throws -> [String] {
         for path in paths {
             let components = path.split(separator: "/", omittingEmptySubsequences: false)
             guard !path.isEmpty, !path.hasPrefix("/"),
@@ -39,7 +39,7 @@ package struct RepositorySourceSnapshot: Sendable {
         return result
     }
 
-    package static func capture(
+    public static func capture(
         repository: String, allowedPaths: [String], environment: [String: String],
         projectFiles: [String] = []
     ) async throws -> RepositorySourceSnapshot {

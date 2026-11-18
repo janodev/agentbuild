@@ -39,7 +39,7 @@ struct SharedProjectPrimitivesTests {
         let repository = try temporaryRepository()
         defer { try? FileManager.default.removeItem(at: repository) }
         let environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"]
-        try Data("ABDiff.xcodeproj/\n".utf8).write(to: repository.appendingPathComponent(".gitignore"))
+        try Data("Example.xcodeproj/\n".utf8).write(to: repository.appendingPathComponent(".gitignore"))
         let capture = try RepositoryCommandCapture()
         for arguments in [["init", "-q"], ["config", "user.name", "Shared Snapshot Tests"],
                           ["config", "user.email", "snapshot@example.invalid"], ["add", ".gitignore"],
@@ -47,7 +47,7 @@ struct SharedProjectPrimitivesTests {
             _ = try await capture.capture(arguments: ["/usr/bin/git"] + arguments,
                 workingDirectory: repository.path, environment: environment)
         }
-        let input = "ABDiff.xcodeproj/project.pbxproj"
+        let input = "Example.xcodeproj/project.pbxproj"
         let graph = repository.appendingPathComponent(input)
         try FileManager.default.createDirectory(at: graph.deletingLastPathComponent(), withIntermediateDirectories: false)
         try Data("before".utf8).write(to: graph)

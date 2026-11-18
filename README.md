@@ -1,199 +1,89 @@
 # AgentBuild
 
-AgentBuild 0.3 is a Swift build driver that runs supported project workflows,
-coordinates shared resources, and saves logs and results.
+AgentBuild is a Swift command-line foundation for coordinated build workflows.
+It runs explicitly leased commands, preserves native results and raw logs, and
+routes project workflows to independently installed adapter executables.
 
-Supported projects:
+Project policy belongs to each project's adapter. This repository publishes
+`AgentBuildCore`, `AgentBuildCLISupport`, and the generic `agentbuild` executable.
+It contains no project adapters. Adapter package directories must have an identity
+different from `agentbuild`; for example, use `Tools/ExampleBuild`.
 
-- **[Notika](Docs/notika-workflows.md).** macOS and iPad Simulator builds and tests, project generation, app launch, DocC, Rust tests, performance checks, and cache/session cleanup.
-- **[ABDiff](Docs/abdiff-workflows.md).** Tuist generation, macOS and iPad builds and tests, and supervised app launch.
-- **[Gunship](Docs/gunship-workflows.md).** Unreal editor/game builds, automation, cooking, packaging, and gameplay validation. Its compilation gate covers Unreal Build Tool phases.
-
-Shared capabilities:
-
-- **Resource ownership.** Coordinate access to generated projects, build caches, and compilation resources.
-- **Execution evidence.** Preserve exact arguments, raw logs, and native exit status.
-- **Shared implementation.** Each adapter owns its commands and artifacts while sharing the execution core.
-
-See [adapter modules](Docs/adapter-modules.md) for extension guidance and
-[project foundations](Docs/project-foundations.md) for ownership and evidence rules.
-
-## Companion tools
-
-Run multiple coding agents on one Mac with less resource contention, lighter
-simulators, and less disk clutter. Competing builds and desktop UI tests take
-turns while independent work continues in parallel.
-
-- [AgentBuild](https://github.com/janodev/agentbuild) coordinates builds and tests, reuses caches, and records results.
-- [AgentLease](https://github.com/janodev/agentlease) coordinates access to shared resources, reducing contention and preventing conflicting work.
-- [SimLease](https://github.com/janodev/simlease) provides disposable simulators, cleans them up afterward, and queues macOS UI automation.
-- [SimSlim](https://github.com/janodev/simslim) disables unneeded Simulator background services to reduce memory use.
-
-AgentLease, SimLease, and SimSlim work independently. AgentBuild is a build driver
-that runs supported project workflows and coordinates the other tools as needed.
-
-## Why AgentBuild?
-
-When several agents develop on one Mac, their builds can regenerate the same
-Xcode project, write to the same DerivedData directory, or compete for compilation
-resources. Each run also needs enough evidence to show what executed and whether
-its tests passed.
-
-AgentLease provides atomic resource ownership. AgentBuild adds project knowledge:
-which resources a workflow needs, which native commands to run, and when ownership
-can end. Its managed project routes provide:
-
-- **Coordinated builds.** Generated projects and compatible caches stay protected
-  while in use. The account-wide `host:compile` gate coordinates compilation
-  across participating repositories. Test routes release that gate before test
-  execution, allowing another project to compile while tests run.
-- **Reusable build state.** Compatible DerivedData survives source changes so
-  Xcode can reuse incremental build outputs.
-- **Inspectable results.** Raw logs, native exit status, result bundles, and
-  executed-test counts accompany source and toolchain observations. Source drift
-  and reporting failures remain separate from actual native outcomes.
-- **Shared workflow code.** Notika, ABDiff, and Gunship adapters reuse ownership, process
-  supervision, and log capture while retaining their own commands and artifacts.
-
-Keeping these rules in a separately tested and installed Swift CLI lets projects
-share one implementation instead of duplicating orchestration scripts. The
-practical benefit is dependable automation and less wasted work; build speed
-benefits come from cache reuse and avoiding competing compilation.
+```text
+agentbuild run / doctor              → shared execution and diagnostics
+agentbuild example <arguments>       → agentbuild-example <arguments>
+private project / Tools/ExampleBuild → its adapter, tests, and workflow docs
+```
 
 ## Use
 
 ```sh
 agentbuild --help
 agentbuild --version
-agentbuild doctor
 agentbuild doctor --json
 agentbuild run --resource example:fixture -- /usr/bin/printf '%s\n' 'hello'
-agentbuild notika plan --repository /absolute/path/to/Notika --route build-macos --json
-agentbuild notika generate --repository /absolute/path/to/Notika
-agentbuild notika build --repository /absolute/path/to/Notika --route build-macos
-agentbuild notika build --repository /absolute/path/to/Notika --route test-unit-file --file SomeTests
-agentbuild notika build --repository /absolute/path/to/Notika --route test-ui-file --platform ipad-simulator --file SomeUITests --method testName --device 'iPad Air 13-inch (M4)'
-agentbuild notika run --repository /absolute/path/to/Notika
-agentbuild notika run-rust-test svg --repository /absolute/path/to/Notika
-agentbuild notika run-preflight --repository /absolute/path/to/Notika
-agentbuild notika run-docs archive --repository /absolute/path/to/Notika
-agentbuild notika run-docs preview --repository /absolute/path/to/Notika --port 8000
-agentbuild notika cleanup --repository /absolute/path/to/Notika --json
-agentbuild abdiff plan --repository /absolute/path/to/ABDiff --route build-macos --json
-agentbuild abdiff generate --repository /absolute/path/to/ABDiff
-agentbuild abdiff build --repository /absolute/path/to/ABDiff --route build-macos
-agentbuild abdiff build --repository /absolute/path/to/ABDiff --route test-unit-file --file SomeTests
-agentbuild gunship test --repository /absolute/path/to/Gunship --engine /absolute/path/to/UE_5.8 --filter Gunship.Zombies
-agentbuild gunship package --repository /absolute/path/to/Gunship --engine /absolute/path/to/UE_5.8 --archive /absolute/archive
+agentbuild example --help
 ```
 
-Doctor requires successful version probes for `swift`, `xcodebuild`, and
-`agentlease`. It also reports whether `tuist`, `simlease`, `simslim`, `make`, and
-`git` are available on `PATH`. It exits `0` when the required probes succeed
-and `1` otherwise; optional missing tools do not fail the check.
+`run` requires an absolute executable and at least one exclusive `--resource`
+or `--shared-resource`. Arguments remain literal; invoke a shell explicitly
+when needed. It saves `stdout.log`, `stderr.log`, `combined.log`, and an atomic
+`manifest.json` under `Artifacts/AgentBuild/<run-id>/`. Use `--artifacts-root`,
+`--working-directory`, and `--lease-home` for isolated workflows and `--json`
+for a machine-readable final report. It preserves native exit codes and reports
+native signals as `128 + signal`. See the [execution contract](Docs/execution.md).
 
-`run` requires an absolute executable and at least one `--resource` or
-`--shared-resource`. Arguments remain literal; specify a shell explicitly when
-needed. Output goes to `stdout.log`, `stderr.log`, and `combined.log` below
-`Artifacts/AgentBuild/<run-id>/`, alongside an atomic `manifest.json`.
-Use `--artifacts-root`, `--working-directory`, and `--lease-home` for isolated
-workflows, and `--json` for a machine-readable final report.
+`doctor` probes `swift`, `xcodebuild`, and `agentlease`, and reports optional
+tool availability. Readiness establishes tool availability, not project build
+or test success.
 
-The CLI preserves child exit codes and reports child signals as `128 + signal`.
-Cancellation waits for direct-child reaping; surviving inheriting descendants
-retain their locks. See the [execution contract](Docs/execution.md) for failure
-codes and lifecycle limits.
-
-`notika plan` observes source and toolchain inputs, derives the compatible cache
-and exact Xcode phases, and prints the requested resources. It acquires no leases,
-creates no session or cache, and executes no project build. Its report explicitly
-marks planning as unowned and its observations as sequential.
-
-`notika build` invokes every admitted native route directly. It holds the session
-writer, generated graph, compatible cache, and account compilation resources
-in that order. It saves separate and combined raw logs and native termination;
-source drift and publication errors remain separate diagnostics. Test routes
-release compilation before runtime and retain actual result counts. UI and
-Simulator workflows acquire or adopt one outer SimLease boundary; functional
-Simulator checks apply SimSlim only to its exported device. See
-[Notika workflows](Docs/notika-workflows.md) and
-[fixed performance evidence](Docs/notika-performance.md).
-
-`notika generate` prepares the existing bridge artifacts and runs the pinned
-Tuist wrapper under exclusive graph ownership. It moves existing generated
-project/workspace folders to Trash before regeneration and records each native
-outcome in a generation-specific session report. `--cached` selects the existing
-cached-dependency generation setting.
-
-`notika run` builds and launches the exact macOS product inside one live session.
-Its running receipt identifies the launched process; the supervisor remains
-alive until the application exits. `notika run-rust-test svg|liteparse` owns
-the pinned license check and Cargo workload below a compatible Rust test cache.
-
-`notika run-preflight` runs or reuses the exact-source development gate. Broad
-`test`, `test-unit`, and `build-and-test` routes run that gate automatically;
-focused routes preserve their narrow workload. Independent semantic helpers
-and contract tests may use Python; they do not own the native controller.
-
-Managed routes perform best-effort executed maintenance using the current local
-day cutoff before admitting new work. Busy, invalid, or uncertain entries stay
-protected; maintenance diagnostics do not replace a native outcome.
-`notika cleanup` previews that retention policy by default. `--execute` moves
-admitted, inactive older folders to the Trash. Busy or uncertain entries stay
-in place and appear in the report. See [daily cleanup](Docs/notika-cleanup.md).
-
-`notika run-docs archive|rendered|preview` runs one fixed DocC build and retains
-its archive in the session. Rendered and preview modes snapshot the renderer
-and produce a private static site; `--renderer-root` selects a stable owned
-renderer tree. Preview binds only `127.0.0.1`, prints its ready URL, and keeps
-the supervisor alive until interruption. Graph/cache ownership spans the full
-pipeline; compilation ownership covers only docbuild. Docbuild, rendering,
-preview, and maintenance outcomes remain separately reported.
-
-The package uses Swift tools 6.4, Swift 6 language mode, and macOS 27 or later.
-ArgumentParser 1.8.2 and Subprocess 1.0.0 are exact dependencies; AgentLeaseCore
-is pinned to a reviewed Git revision.
+Install `agentbuild-example` beside the resolved `agentbuild` executable to
+provide `agentbuild example`. An absolute
+`AGENTBUILD_ADAPTER_EXAMPLE_EXECUTABLE` override selects a different executable.
+The router drops the adapter name and replaces its process with that executable,
+keeping the remaining arguments, environment, standard streams, and inherited
+descriptors. It acquires no leases and performs no build. Adapters are not
+searched for on `PATH`. See [building an adapter](Docs/building-an-adapter.md)
+for the complete routing and package contract.
 
 ## Development
+
+The package requires Swift tools 6.4, Swift 6 language mode, and macOS 27 or
+later. ArgumentParser 1.8.2 and Subprocess 1.0.0 are exact dependencies;
+AgentLeaseCore is pinned to a reviewed Git revision.
 
 ```sh
 make build
 make release
 make test
-make test TEST_FILTER=ABDiff
+make test TEST_FILTER=ManagedCLITests
 make install
 ```
 
-`SWIFT_JOBS` defaults to `sysctl -n hw.logicalcpu`, using all logical cores
-(12 on the validation Mac), as requested. `make build SWIFT_JOBS=1` reduces
-compiler parallelism. Bootstrap compilation acquires the exclusive AgentLease
-resource `host:compile` in the effective account's registry. The default registry
-is `~/.agentlease`, independent of an inherited `HOME` or checkout-local
-`AGENTLEASE_HOME`. An explicitly set `AGENTLEASE_COMPILE_HOME` must be absolute
-and nonempty, and all participating repositories must use the same override.
-Test execution starts after its build has released compilation ownership.
-The test route explicitly disables parallel test cases: fault fixtures replace
-process-global descriptors, and overlapping fixtures can temporarily inherit
-each other's locks. Individual concurrency tests still exercise competing
-tasks and native children inside their own case.
+`SWIFT_JOBS` defaults to all logical CPU cores. Compilation acquires the
+account-wide AgentLease `host:compile` resource. Tests execute after compilation
+ownership ends. The shared registry defaults to the effective account's
+`~/.agentlease`, independently of inherited `HOME` and checkout-local
+`AGENTLEASE_HOME`. An explicit `AGENTLEASE_COMPILE_HOME` must be absolute and
+nonempty, and every participating repository must use the same value.
 
-## Installation
+`make install` atomically copies the release executable to
+`~/Developer/tools/agentbuild`. Set `BIN_DIR` to an absolute directory to choose
+another destination. Installation does not point into `.build`. Install each
+adapter independently as another copied executable in that directory, or set
+its explicit absolute override.
 
-`make install` copies the release executable to `~/Developer/tools/agentbuild`.
-Add `~/Developer/tools` to `PATH` to use the command alongside `agentlease`,
-`simlease`, and `simslim`. Set `BIN_DIR` to an absolute directory to choose
-another destination. Installation atomically replaces the copied executable;
-it does not create a symlink or depend on the source checkout's `.build` tree.
+See the [documentation index](Docs/index.md), [design contract](Docs/design.md),
+and [adapter authoring guide](Docs/building-an-adapter.md).
 
-The copied executable matches the built release and the tool doctor passes.
-The [workflow validation record](Docs/notika-workflows.md#validation-record)
-records the tested workflows, native outcomes, and evidence limits. Source,
-build products, and the installed executable have independent lifecycles.
+## Companion tools
 
-See the [documentation index](Docs/index.md) and [design contract](Docs/design.md)
-for ownership, evidence, and project-adapter boundaries. Implemented route
-coverage is distinct from a claim that every native workflow has been executed
-in a particular validation batch.
+- [AgentLease](https://github.com/janodev/agentlease) coordinates shared resources.
+- [SimLease](https://github.com/janodev/simlease) manages disposable simulators and macOS UI automation.
+- [SimSlim](https://github.com/janodev/simslim) reduces Simulator background work.
+
+These tools work independently. Adapters use them when their workflow requires
+resource or device coordination.
 
 ## License
 

@@ -1,93 +1,72 @@
 ---
+okf_version: "0.1"
 type: Architecture
-title: Adapter modules
-description: Defines SwiftPM module ownership, shared APIs, tests, and single-executable linking for project adapters.
+title: Adapter package boundaries
+description: Defines public shared-library ownership and independently installed project adapters.
 tags: [architecture, swiftpm, adapters, testing]
 ---
 
-# Module ownership
+# Package ownership
 
-The root `Package.swift` builds one `agentbuild` executable from shared targets
-and three project adapter targets. Each adapter owns its commands, project
-planning, workflow policy, reports, and tests under `Adapters/<project>`.
-There are no runtime adapter discovery or dynamic-library installation steps.
-SwiftPM compiles the target dependencies into the executable; changing an
-adapter requires rebuilding `agentbuild`.
+The public package builds `agentbuild` and publishes two reusable libraries.
+Project adapters are independent Swift packages in their own private project
+repositories, using project-specific directories such as `Tools/ExampleBuild`.
+The final directory component must differ from dependency identity `agentbuild`,
+ignoring case; changing `Package(name:)` alone does not prevent a SwiftPM identity
+collision.
 
-| Target | Sources | Tests |
-| --- | --- | --- |
-| `AgentBuildCore` | `Sources/AgentBuildCore` | `Tests/AgentBuildCoreTests` |
-| `AgentBuildCLISupport` | `Sources/AgentBuildCLISupport` | Exercised through CLI integration tests |
-| `NotikaAdapter` | `Adapters/Notika/Sources` | `Adapters/Notika/Tests` |
-| `ABDiffAdapter` | `Adapters/ABDiff/Sources` | `Adapters/ABDiff/Tests` |
-| `GunshipAdapter` | `Adapters/Gunship/Sources` | `Adapters/Gunship/Tests` |
-| `AgentBuildCLI` | `Sources/AgentBuildCLI` | CLI integration tests in the owning target |
+| Component | Ownership |
+| --- | --- |
+| `AgentBuildCore` | Generic compilation admission, native supervision and worker protocols, evidence, repository observations, result parsing, and phase splitting |
+| `AgentBuildCLISupport` | Signal relay, current-executable resolution, and the descriptor-only native worker command |
+| `agentbuild` | Generic `run`, `doctor`, hidden `_native-worker`, and external-adapter routing |
+| `agentbuild-example` | Its project's commands, planning, resource and cache policy, reports, fixtures, tests, and workflow documentation |
 
-The CLI registers each adapter's command type explicitly. It also registers
-the generic native helper and Notika's private documentation-preview command
-so self-reexecution continues to enter the same executable.
+Shared modules must not import project adapters or contain project-specific
+routes, toolchain policy, resource namespaces, or retention rules. An adapter
+must not depend on another adapter. Public library API should express reusable
+concepts; exporting a symbol is a compatibility commitment, not a reason to
+publish all implementation details.
 
-```mermaid
-flowchart TD
-    CLI[AgentBuildCLI] --> Notika[NotikaAdapter]
-    CLI --> ABDiff[ABDiffAdapter]
-    CLI --> Gunship[GunshipAdapter]
-    CLI --> Core[AgentBuildCore]
-    CLI --> Support[AgentBuildCLISupport]
-    Notika --> Core
-    ABDiff --> Core
-    Gunship --> Core
-    Notika --> Support
-    ABDiff --> Support
-    Gunship --> Support
-```
+# Library sharing and executable delegation
 
-An adapter must not import another adapter. The shared core and CLI support
-must not depend on any adapter. These boundaries are enforced by the target
-dependency graph. Keep shared implementation APIs `package` where only sibling
-targets need them; exported library APIs and their required types remain
-`public`. Do not make all implementation details public to move files.
+Adapters link `AgentBuildCore` and `AgentBuildCLISupport` through a reviewed,
+pinned SwiftPM dependency. This is library sharing at build time. Each adapter
+has its own executable, dependency resolution, tests, release, and installation
+lifecycle. It need not rebuild the generic executable when its project policy
+changes.
 
-# Shared responsibilities
+`agentbuild example ...` replaces the router process with the installed
+`agentbuild-example ...` executable. This is executable delegation at runtime,
+not dynamic Swift module loading. The public executable does not link or
+register project command types. Adding an adapter requires no public source
+change or public project-name allowlist.
 
-`AgentBuildCore` owns compilation admission, native supervision and worker
-protocols, raw-log custody, retained artifacts, canonical and strict JSON,
-repository observations, and generic Xcode phase splitting. Shared types use
-neutral names such as `NativeObservation`, `ControllerSessionArtifacts`,
-`RepositorySourceSnapshot`, `ResultBundleTree`, and `ExecutedTests`.
+An adapter root command uses its executable name (`agentbuild-example`), adopts
+its project's command configuration, and registers `NativeWorkerCommand` from
+`AgentBuildCLISupport`. Native supervision reexecutes the adapter's own resolved
+executable; that executable must recognize `_native-worker`. Any additional
+private helper must also be registered by its owning adapter root.
 
-The shared inherited-environment allowlist is `ChildEnvironmentPolicy`.
-Notika's native cache bindings and `NOTIKA_DERIVED_DATA` policy stay in
-`NotikaAdapter`. ABDiff's source-snapshot wrapper supplies its generated graph
-inputs and translates shared failures to ABDiff's established errors; the shared
-snapshot has no implicit project files. Notika's xcresult custody and performance
-acceptance rules stay in its adapter, while bounded result-tree retention and
-xcresult count parsing are shared.
+Only executable targets have `@main`. A private adapter may keep its commands
+in a separate private library target when its tests need to import them.
+Neither its library nor its executable is a public AgentBuild product.
 
-`AgentBuildCLISupport` owns the signal relay and current-executable resolution.
-Adapters use it without depending on the CLI executable target. Only the
-executable target has an `@main` entry point.
+# Tests and documentation
 
-Swift library consumers import the adapter module for project-specific types;
-`import AgentBuildCore` provides shared execution APIs. CLI command names,
-retained JSON schemas, resource namespaces, and worker protocol commitments
-remain independent of Swift source-directory and module names.
+Use `make build` and `make test` for this public package. The tests build under
+`host:compile` and execute after its release. Public tests cover shared APIs,
+generic command behavior, and routing against synthetic adapter executables.
+Project fixtures and integration tests stay with the private adapter.
 
-# Tests and development
+A fixture proving process or controller behavior does not establish that a real
+project build, test run, deployment, or UI workflow passed. Each adapter records
+native validation and limitations in its own workflow documentation. Keep real
+native status and executed-test counts separate from source observations and
+report formatting.
 
-Use `make build` and `make test` so compilation holds the account-wide gate.
-Tests compile under that gate and execute after its release. To run one adapter's
-tests, use `make test TEST_FILTER=GunshipAdapterTests` (or `ABDiffAdapterTests` or
-`NotikaAdapterTests`). Existing suite-name filters also work.
-
-`AgentBuildTestSupport` supplies a common package-root location for fixtures and
-the built CLI. Test targets depend on their own adapter, shared core, and test
-support. Retained Notika performance fixtures remain under `Tests/Evidence`.
-Controller fixtures do not establish that a real project build or UI workflow
-has passed; record native verification separately in its workflow document.
-
-To add an adapter, create its `Sources` and `Tests` directories, declare the two
-targets with only shared dependencies, and register its root command in
-`AgentBuildCommand`. Add its workflow contract and index entry. A separate
-`Package.swift` is unnecessary unless the adapter needs an independent package
-lifecycle.
+See [building an adapter](building-an-adapter.md) for the package skeleton,
+routing rules, resource lifecycle, and installation checklist. Deleting migrated
+project files from this repository changes the current tree; it does not remove
+previously committed content from Git history. History cleanup requires a
+separate decision and operation.

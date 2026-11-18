@@ -1,19 +1,32 @@
-import ABDiffAdapter
+import AgentBuildCLISupport
 import AgentBuildCore
 import ArgumentParser
+import Darwin
 import Foundation
-import GunshipAdapter
-import NotikaAdapter
 
 @main
+enum AgentBuildEntry {
+    static func main() async {
+        do {
+            try ExternalAdapterCommand.dispatchIfRequested(Array(CommandLine.arguments.dropFirst()))
+        } catch let error as AdapterDispatchError {
+            FileHandle.standardError.write(Data("agentbuild: \(error.message)\n".utf8))
+            exit(error.exitCode)
+        } catch {
+            FileHandle.standardError.write(Data("agentbuild: \(error)\n".utf8))
+            exit(70)
+        }
+        await AgentBuildCommand.main()
+    }
+}
+
 struct AgentBuildCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentbuild",
         abstract: "Coordinate owned commands and preserve their native results and logs.",
-        discussion: "The Notika, ABDiff, and Gunship adapters run owned development workflows; run executes generic explicitly leased commands.",
+        discussion: "Run explicitly leased commands, or use agentbuild <adapter> to delegate to an installed sibling agentbuild-<adapter> executable. Adapters are installed separately by their owning projects.",
         version: AgentBuild.version,
-        subcommands: [DoctorCommand.self, RunCommand.self, NotikaCommand.self, ABDiffCommand.self, GunshipCommand.self, NativeWorkerCommand.self,
-                      NotikaDocPreviewCommand.self]
+        subcommands: [DoctorCommand.self, RunCommand.self, NativeWorkerCommand.self]
     )
 }
 

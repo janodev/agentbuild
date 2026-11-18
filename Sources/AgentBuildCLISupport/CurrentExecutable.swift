@@ -3,7 +3,7 @@ import Darwin
 import MachO
 
 /// Resolve this process through dyld; argv[0] and PATH cannot select the helper.
-package func currentAgentBuildExecutable() throws -> String {
+public func currentAgentBuildExecutable() throws -> String {
     var count: UInt32 = 0
     _ = _NSGetExecutablePath(nil, &count)
     guard count > 0, count <= 1_048_576 else { throw ValidationError("Cannot resolve the AgentBuild executable.") }

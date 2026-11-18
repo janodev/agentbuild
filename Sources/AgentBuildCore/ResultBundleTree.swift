@@ -2,14 +2,14 @@ import CryptoKit
 import Darwin
 import Foundation
 
-package struct ResultNodeIdentity: Equatable, Sendable {
-    package let device: Int64
-    package let inode: UInt64
-    package let size: Int64
-    package let mode: UInt16
-    package let owner: UInt32
+public struct ResultNodeIdentity: Equatable, Sendable {
+    public let device: Int64
+    public let inode: UInt64
+    public let size: Int64
+    public let mode: UInt16
+    public let owner: UInt32
     package let group: UInt32
-    package let links: UInt64
+    public let links: UInt64
     package let modifiedSeconds: Int64
     package let modifiedNanoseconds: Int64
     package let changedSeconds: Int64
@@ -19,7 +19,7 @@ package struct ResultNodeIdentity: Equatable, Sendable {
     package let birthSeconds: Int64
     package let birthNanoseconds: Int64
 
-    package init(_ status: stat) {
+    public init(_ status: stat) {
         device = Int64(status.st_dev); inode = UInt64(status.st_ino); size = Int64(status.st_size)
         mode = UInt16(status.st_mode); owner = UInt32(status.st_uid); group = UInt32(status.st_gid)
         links = UInt64(status.st_nlink)
@@ -29,11 +29,11 @@ package struct ResultNodeIdentity: Equatable, Sendable {
         birthSeconds = Int64(status.st_birthtimespec.tv_sec); birthNanoseconds = Int64(status.st_birthtimespec.tv_nsec)
     }
 
-    package var directory: Bool { mode & UInt16(S_IFMT) == UInt16(S_IFDIR) }
-    package var regular: Bool { mode & UInt16(S_IFMT) == UInt16(S_IFREG) }
-    package var safe: Bool { owner == UInt32(geteuid()) && mode & 0o7022 == 0 && (directory || (regular && links == 1)) }
+    public var directory: Bool { mode & UInt16(S_IFMT) == UInt16(S_IFDIR) }
+    public var regular: Bool { mode & UInt16(S_IFMT) == UInt16(S_IFREG) }
+    public var safe: Bool { owner == UInt32(geteuid()) && mode & 0o7022 == 0 && (directory || (regular && links == 1)) }
 
-    package func sameDirectoryBinding(_ other: Self) -> Bool {
+    public func sameDirectoryBinding(_ other: Self) -> Bool {
         directory && other.directory && device == other.device && inode == other.inode
             && mode == other.mode && owner == other.owner && group == other.group
     }
@@ -41,7 +41,7 @@ package struct ResultNodeIdentity: Equatable, Sendable {
 
 /// Watch descriptors remain open through terminal sealing. Events are sticky;
 /// replacing bytes and restoring them cannot erase a recorded mutation.
-package final class ResultMutationWatch {
+public final class ResultMutationWatch {
     package let descriptor: Int32
     private var failure: ResultBundleFailure?
     private var labels: [UInt: String] = [:]
@@ -56,7 +56,7 @@ package final class ResultMutationWatch {
         self.allowsRootSQLitePreparation = allowsRootSQLitePreparation
     }
 
-    package init() throws {
+    public init() throws {
         let queue = kqueue()
         guard queue >= 0 else { throw resultFailure("create result watch") }
         guard fcntl(queue, F_SETFD, FD_CLOEXEC) == 0 else {
@@ -69,7 +69,7 @@ package final class ResultMutationWatch {
 
     deinit { _ = Darwin.close(descriptor) }
 
-    package func arm(_ file: Int32, writes: Bool, label: String? = nil) throws {
+    public func arm(_ file: Int32, writes: Bool, label: String? = nil) throws {
         var event = kevent()
         event.ident = UInt(file)
         event.filter = Int16(EVFILT_VNODE)
@@ -80,7 +80,7 @@ package final class ResultMutationWatch {
         if let label { labels[event.ident] = label }
     }
 
-    package func check() throws {
+    public func check() throws {
         if let failure { throw failure }
         while true {
             var event = kevent()
@@ -137,21 +137,21 @@ public struct ResultTreeRecord: Codable, Equatable, Sendable {
 
 /// A deliberately bounded ordinary-test bundle. Refusing an oversized tree is
 /// an evidence failure, never permission to publish unchecked content.
-package final class ResultBundleTree {
-    package static let maximumEntries = 4_096
-    package static let maximumBytes: Int64 = 1_024 * 1_024 * 1_024
+public final class ResultBundleTree {
+    public static let maximumEntries = 4_096
+    public static let maximumBytes: Int64 = 1_024 * 1_024 * 1_024
     // Index preparation retains the original tree while sealing the final one.
     // This is capacity, not a reservation against unrelated descriptor users.
-    package static let minimumDescriptorLimit: rlim_t = rlim_t(2 * maximumEntries + 256)
+    public static let minimumDescriptorLimit: rlim_t = rlim_t(2 * maximumEntries + 256)
     private static let descriptorLimitLock = NSLock()
-    package let root: Int32
-    package let watch: ResultMutationWatch
-    package let commitment: String
-    package let byteCount: Int64
+    public let root: Int32
+    public let watch: ResultMutationWatch
+    public let commitment: String
+    public let byteCount: Int64
     private let nodes: [RetainedResultNode]
     private let allowsRootSQLitePreparation: Bool
 
-    package static func descriptorLimitPlan(_ current: rlimit) throws -> rlimit {
+    public static func descriptorLimitPlan(_ current: rlimit) throws -> rlimit {
         guard current.rlim_cur <= current.rlim_max else {
             throw ResultBundleFailure(operation: "invalid result descriptor limit", code: EINVAL)
         }
@@ -162,7 +162,7 @@ package final class ResultBundleTree {
         return rlimit(rlim_cur: max(current.rlim_cur, minimumDescriptorLimit), rlim_max: current.rlim_max)
     }
 
-    package static func ensureDescriptorBudget() throws {
+    public static func ensureDescriptorBudget() throws {
         descriptorLimitLock.lock()
         defer { descriptorLimitLock.unlock() }
         var current = rlimit()
@@ -184,14 +184,14 @@ package final class ResultBundleTree {
         }
     }
 
-    package var records: [ResultTreeRecord] {
+    public var records: [ResultTreeRecord] {
         nodes.map { .init(path: $0.path, type: $0.identity.directory ? "directory" : "file",
                           device: $0.identity.device, inode: $0.identity.inode,
                           mode: $0.identity.mode, owner: $0.identity.owner,
                           bytes: $0.identity.regular ? $0.identity.size : 0, sha256: $0.sha256) }
     }
 
-    package init(parent: Int32, name: String, maximumBytes: Int64 = ResultBundleTree.maximumBytes,
+    public init(parent: Int32, name: String, maximumBytes: Int64 = ResultBundleTree.maximumBytes,
          maximumEntries: Int = ResultBundleTree.maximumEntries, privatePermissions: Bool = false,
          requiredFilePermissions: UInt16? = nil, requiredRootFile: String? = nil,
          allowsRootSQLitePreparation: Bool = false) throws {
@@ -233,7 +233,7 @@ package final class ResultBundleTree {
 
     deinit { for node in nodes.reversed() { _ = Darwin.close(node.descriptor) } }
 
-    package func revalidate() throws {
+    public func revalidate() throws {
         try watch.check()
         try Self.validateBindings(nodes, allowsRootSQLitePreparation: allowsRootSQLitePreparation)
         for node in nodes {
@@ -263,7 +263,7 @@ package final class ResultBundleTree {
     /// xcresulttool creates its SQLite index on its first read. During that
     /// one authenticated preparation phase only fixed root cache entries may
     /// appear; every original file and descendant directory remains immutable.
-    package func validateSQLitePreparation() throws {
+    public func validateSQLitePreparation() throws {
         guard allowsRootSQLitePreparation else {
             throw ResultBundleFailure(operation: "result indexing not admitted", code: EINVAL)
         }
@@ -284,7 +284,7 @@ package final class ResultBundleTree {
         try revalidate()
     }
 
-    package func readFile(relativePath: String, maximumBytes: Int64) throws -> Data {
+    public func readFile(relativePath: String, maximumBytes: Int64) throws -> Data {
         try revalidate()
         guard maximumBytes >= 0, let node = nodes.first(where: { $0.path.utf8.elementsEqual(relativePath.utf8) }),
               node.identity.regular, node.identity.size <= maximumBytes else {
@@ -414,19 +414,19 @@ package final class ResultBundleTree {
     }
 }
 
-package func resultDescriptorIdentity(_ descriptor: Int32) throws -> ResultNodeIdentity {
+public func resultDescriptorIdentity(_ descriptor: Int32) throws -> ResultNodeIdentity {
     var status = stat()
     guard fstat(descriptor, &status) == 0 else { throw resultFailure("stat retained result") }
     return ResultNodeIdentity(status)
 }
 
-package func resultEntryIdentity(_ parent: Int32, _ name: String) throws -> ResultNodeIdentity {
+public func resultEntryIdentity(_ parent: Int32, _ name: String) throws -> ResultNodeIdentity {
     var status = stat()
     guard fstatat(parent, name, &status, AT_SYMLINK_NOFOLLOW) == 0 else { throw resultFailure("stat result entry", detail: name) }
     return ResultNodeIdentity(status)
 }
 
-package func resultFailure(_ operation: String, code: Int32? = nil, detail: String? = nil) -> ResultBundleFailure {
+public func resultFailure(_ operation: String, code: Int32? = nil, detail: String? = nil) -> ResultBundleFailure {
     ResultBundleFailure(operation: operation, code: code ?? errno, detail: detail)
 }
 

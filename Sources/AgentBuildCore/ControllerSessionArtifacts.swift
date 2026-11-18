@@ -11,19 +11,19 @@ package enum ControllerSessionArtifactError: Error, Equatable, Sendable {
 /// Checked artifact descriptors only. The actual outer session-writer lease is
 /// held by the controller; this class never mints ownership from a report/path.
 private final class ControllerSessionOwnedDescriptor: Sendable { let value: Int32; init(_ value: Int32) { self.value = value }; deinit { _ = close(value) } }
-package final class ControllerSessionArtifacts: Sendable {
-    package let path: String
-    package let identity: stat
-    package let repositoryDescriptor: Int32
+public final class ControllerSessionArtifacts: Sendable {
+    public let path: String
+    public let identity: stat
+    public let repositoryDescriptor: Int32
     private let directory: ControllerSessionOwnedDescriptor
     private let root: ControllerSessionOwnedDescriptor
     private let repository: RetainedArtifactDirectory
     private let custody: RetainedArtifactDirectory
     private let sealed = Mutex<[RetainedArtifactFile]>([])
-    package convenience init(repository: String, runID: String) throws {
+    public convenience init(repository: String, runID: String) throws {
         try self.init(repository: repository, runID: runID, createSession: true)
     }
-    package convenience init(borrowingSessionPath: String, repository: String) throws {
+    public convenience init(borrowingSessionPath: String, repository: String) throws {
         let prefix = repository + "/Artifacts/AgentSessions/"
         guard borrowingSessionPath.utf8.starts(with: prefix.utf8) else { throw ControllerSessionArtifactError.invalidArgument }
         let runID = String(borrowingSessionPath.dropFirst(prefix.count))
@@ -67,13 +67,13 @@ package final class ControllerSessionArtifacts: Sendable {
         self.path = sessionPath; self.identity = identity; self.repositoryDescriptor = opened
         self.root = root; self.directory = directory; self.repository = repository; self.custody = custody
     }
-    package func revalidate() throws {
+    public func revalidate() throws {
         try repository.revalidate(); try custody.revalidate()
         let metadata = try controllerSessionStat(directory.value)
         guard metadata.st_dev == identity.st_dev, metadata.st_ino == identity.st_ino, metadata.st_mode & 0o7777 == 0o700 else { throw ControllerSessionArtifactError.changed }
         for receipt in sealed.withLock({ $0 }) { try receipt.revalidate() }
     }
-    package func createPrivateDirectory(named name: String, additionalAllowedNames: Set<String> = []) throws -> RetainedArtifactDirectory {
+    public func createPrivateDirectory(named name: String, additionalAllowedNames: Set<String> = []) throws -> RetainedArtifactDirectory {
         guard !name.isEmpty, name.utf8.count <= 128, !name.hasPrefix("."),
               !name.contains("/"), !name.utf8.contains(0),
               (additionalAllowedNames.contains(name) || name.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 })) else {
@@ -97,7 +97,7 @@ package final class ControllerSessionArtifacts: Sendable {
         try revalidate(); try retained.revalidate()
         return retained
     }
-    package func publish(sealedData: Data, name: String, validating: () throws -> Void) throws {
+    public func publish(sealedData: Data, name: String, validating: () throws -> Void) throws {
         guard !sealedData.isEmpty, sealedData.count <= StrictJSONLimits.standard.maximumBytes,
               ["in-progress.json", "manifest.json", "preview-ready.json"].contains(name) else {
             throw ControllerSessionArtifactError.invalidArgument

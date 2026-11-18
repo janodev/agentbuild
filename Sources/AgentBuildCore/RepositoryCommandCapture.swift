@@ -140,7 +140,7 @@ private func captureSpawnError(_ operation: String, _ code: Int32) -> Repository
 }
 
 /// Python UTF-8 replacement decoding and str.strip's whitespace set.
-package func repositoryDecodedText(_ data: Data) -> String {
+public func repositoryDecodedText(_ data: Data) -> String {
     let scalars = String(decoding: data, as: UTF8.self).unicodeScalars
     func whitespace(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {

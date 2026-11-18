@@ -1,4 +1,5 @@
 ---
+okf_version: "0.1"
 type: Contract
 title: Owned command execution
 description: Defines generic command ownership, cancellation, log persistence, and truthful outcome boundaries.
@@ -113,6 +114,6 @@ shared underlying implementation.
 The next project route must own the generated graph and compatible cache
 before acquiring `host:compile`, release compilation admission before tests
 or UI work, and retain authoritative native status and project provenance.
-This layer does not implement Notika cache retention or prune its sessions.
+This layer does not implement a project adapter's cache retention or prune its sessions.
 Generic raw logs currently have no automatic retirement; project/session
 retention must be defined before routine production adoption.

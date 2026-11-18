@@ -2,8 +2,8 @@ import Darwin
 import Foundation
 
 /// Preserves the named shim path instead of resolving it to its dispatcher.
-package enum ExecutableToolResolver {
-    package static func resolve(_ name: String, environment: [String: String]) -> String? {
+public enum ExecutableToolResolver {
+    public static func resolve(_ name: String, environment: [String: String]) -> String? {
         for component in (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":") where component.hasPrefix("/") {
             let candidate = String(component) + "/" + name
             var metadata = stat()
