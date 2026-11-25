@@ -209,6 +209,8 @@ compilation lease. Classify phases that really compile, including auxiliary
 language or documentation builds, rather than assuming only the main build
 uses compilation resources.
 
+For opt-in worktree sharing, see the [warm build slot example](warm-build-slots.md).
+
 # Preserve native evidence
 
 Retain exact native invocation information, combined raw stdout/stderr logs,

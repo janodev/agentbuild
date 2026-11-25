@@ -46,6 +46,9 @@ descriptors. It acquires no leases and performs no build. Adapters are not
 searched for on `PATH`. See [building an adapter](Docs/building-an-adapter.md)
 for the complete routing and package contract.
 
+Adapters can share one source mirror and DerivedData directory across compatible
+worktrees using the [warm build slot API](Docs/warm-build-slots.md).
+
 ## Development
 
 The package requires Swift tools 6.4, Swift 6 language mode, and macOS 27 or

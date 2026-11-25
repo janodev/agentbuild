@@ -29,7 +29,7 @@ public struct ArtifactFileFingerprint: Equatable, Sendable {
     public let changeSeconds: Int64
     public let changeNanoseconds: Int64
 
-    fileprivate init(_ metadata: stat) {
+    init(_ metadata: stat) {
         device = Int64(metadata.st_dev)
         inode = UInt64(metadata.st_ino)
         size = Int64(metadata.st_size)
@@ -182,7 +182,13 @@ public final class RetainedArtifactDirectory: @unchecked Sendable {
         if let failure { throw failure }
     }
 
-    fileprivate func withDirectory<T>(_ body: (Int32) throws -> T) throws -> T {
+    func containsDirectory(_ other: ArtifactFileFingerprint) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return links.contains { $0.fingerprint.device == other.device && $0.fingerprint.inode == other.inode }
+    }
+
+    func withDirectory<T>(_ body: (Int32) throws -> T) throws -> T {
         lock.lock()
         defer { lock.unlock() }
         guard let directory = links.last else { throw RetainedArtifactError.closed }
