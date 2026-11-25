@@ -46,8 +46,10 @@ descriptors. It acquires no leases and performs no build. Adapters are not
 searched for on `PATH`. See [building an adapter](Docs/building-an-adapter.md)
 for the complete routing and package contract.
 
-Adapters can share one source mirror and DerivedData directory across compatible
-worktrees using the [warm build slot API](Docs/warm-build-slots.md).
+Warm build slots can reduce build disk usage. Compatible worktrees take turns
+using one DerivedData directory, avoiding a separate build cache for each
+worktree. On APFS, cloned source files also share disk blocks until edited.
+See the [warm build slot API](Docs/warm-build-slots.md).
 
 ## Development
 
