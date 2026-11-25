@@ -25,6 +25,9 @@ tags: [development, agents, testing]
 - Read `Docs/building-an-adapter.md` when extending the public adapter API.
   Shared code must not import an adapter. Expose deliberately reusable API;
   keep implementation details private or package-scoped.
+- When designing an Xcode adapter's cache policy, consider
+  `AgentBuildCore.WarmBuildSlot` if compatible worktrees could share DerivedData.
+  See the [adapter example](Docs/warm-build-slots.md).
 - Read `Docs/execution.md` before lifecycle changes. Keep native outcomes,
   raw evidence, executed-test counts, source drift, cancellation, and publication
   failures separate. Router handoff must preserve literal arguments, environment,

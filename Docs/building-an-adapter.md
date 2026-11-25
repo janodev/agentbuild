@@ -20,6 +20,20 @@ pins, cache identities, native phases, artifacts, and exit behavior. Define
 which behavior must remain compatible. Do not substitute fixture success for
 real native validation when migrating an existing controller.
 
+For an Xcode adapter, choose between per-worktree DerivedData and a shared
+`AgentBuildCore.WarmBuildSlot`. A shared slot can save disk and cold builds when
+agents frequently create worktrees with similar inputs. The adapter chooses
+which inputs to mirror and which builds can share a cache. See the
+[integration example](warm-build-slots.md).
+
+To make this option discoverable in the consuming repository, its root or
+adapter-package `AGENTS.md` can include this line:
+
+> When changing Xcode build caching, consider `AgentBuildCore.WarmBuildSlot`
+> for sharing DerivedData across compatible worktrees. Check the adapter's
+> AgentBuild revision in `Package.resolved` before using the API.
+> [Warm build slot example](https://github.com/janodev/agentbuild/blob/a7a6b4dbc8be3b45eacc270eec644dd4220bd839/Docs/warm-build-slots.md)
+
 # Create the Swift package
 
 Use Swift tools 6.4, Swift 6 language mode, and macOS 27 or later. Depend on
@@ -208,8 +222,6 @@ use. Generation needs graph ownership but does not automatically need a
 compilation lease. Classify phases that really compile, including auxiliary
 language or documentation builds, rather than assuming only the main build
 uses compilation resources.
-
-For opt-in worktree sharing, see the [warm build slot example](warm-build-slots.md).
 
 # Preserve native evidence
 
