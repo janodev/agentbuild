@@ -12,11 +12,21 @@ public struct BuildSlotSyncSummary: Sendable {
 /// lease holder can finish an interrupted sync without trusting a journal.
 struct BuildSlotMirror {
     let device: Int64
+    let worktree: String
+    let symlinkPolicy: BuildSlotSymlinkPolicy
+    private var linksToValidate: [String] = []
+    private var latestAdvancedSecond: Int?
 
     private(set) var summary = BuildSlotSyncSummary()
 
+    init(device: Int64, worktree: String, symlinkPolicy: BuildSlotSymlinkPolicy) {
+        self.device = device
+        self.worktree = worktree
+        self.symlinkPolicy = symlinkPolicy
+    }
+
     mutating func sync(from source: Int32, to target: Int32, prefix: String,
-              including: (String) throws -> Bool) throws {
+                       including: (String) throws -> Bool) throws {
         try Task.checkCancellation()
         let before = try fingerprint(source)
         let names = try directoryNames(source).filter { name in
@@ -32,15 +42,13 @@ struct BuildSlotMirror {
             let path = prefix + name
             let input = try requiredEntry(name, at: source)
             let kind = input.mode & S_IFMT
-            let existing = try entry(name, at: target)
+            let existing = try Self.prepareEntry(name, at: target, device: device)
             if let existing, existing.mode & S_IFMT != kind {
                 try remove(name, from: target)
             }
             switch kind {
             case S_IFDIR:
-                if let existing, existing.mode & S_IFMT == S_IFDIR {
-                    try checkDevice(existing, name: path)
-                } else {
+                if existing.map({ $0.mode & S_IFMT }) != S_IFDIR {
                     guard mkdirat(target, name, 0o700) == 0 else { throw systemError("mkdir " + path) }
                 }
                 try withDirectory(source, name) { child in
@@ -51,7 +59,7 @@ struct BuildSlotMirror {
             case S_IFREG:
                 try syncFile(name, source: source, target: target, input: input, existing: existing)
             case S_IFLNK:
-                let link = try linkTarget(name, at: source)
+                let link = try mirroredLink(linkTarget(name, at: source), path: path)
                 if existing.map({ $0.mode & S_IFMT == S_IFLNK }) == true {
                     if try linkTarget(name, at: target).utf8.elementsEqual(link.utf8) { break }
                     try remove(name, from: target)
@@ -68,6 +76,64 @@ struct BuildSlotMirror {
         }
     }
 
+    private mutating func mirroredLink(_ link: String, path: String) throws -> String {
+        guard symlinkPolicy == .withinSource else { return link }
+        linksToValidate.append(path)
+        guard link.hasPrefix("/") else { return link }
+        let root = worktree + "/"
+        let suffix: String
+        if link.utf8.elementsEqual(worktree.utf8) {
+            suffix = "."
+        } else if link.utf8.starts(with: root.utf8) {
+            suffix = String(decoding: link.utf8.dropFirst(root.utf8.count).drop(while: { $0 == 0x2F }), as: UTF8.self)
+        } else {
+            throw BuildSlotError.unresolvedSlotLink(path)
+        }
+        let ascent = String(repeating: "../", count: path.split(separator: "/").count - 1)
+        return ascent + (suffix.isEmpty ? "." : suffix)
+    }
+
+    func validateLinks(in root: Int32) throws {
+        // Validate after forward references and entire chains have been mirrored.
+        for path in linksToValidate {
+            try Task.checkCancellation()
+            var info = stat()
+            guard fstatat(root, path, &info, AT_RESOLVE_BENEATH) == 0 else {
+                throw BuildSlotError.unresolvedSlotLink(path)
+            }
+        }
+    }
+
+    /// Only called for destination entries under exclusive slot ownership.
+    static func prepareEntry(_ name: String, at parent: Int32, device: Int64,
+                             directoryOnly: Bool = false) throws -> ArtifactFileFingerprint? {
+        guard let info = try entryStatus(name, at: parent) else { return nil }
+        let directory = info.st_mode & S_IFMT == S_IFDIR
+        guard Int64(info.st_dev) == device else { throw BuildSlotError.unsupportedEntry(name) }
+        if directoryOnly {
+            guard directory, info.st_uid == geteuid(), info.st_mode & 0o7022 == 0 else {
+                throw RetainedArtifactError.unsafeDirectory
+            }
+        }
+        let blockingFlags = UInt32(UF_IMMUTABLE | UF_APPEND)
+        if info.st_flags & blockingFlags != 0 {
+            // Changing flags on a hard-linked file would affect all its names.
+            guard info.st_uid == geteuid(), directory || info.st_nlink == 1 else {
+                throw BuildSlotError.unsupportedEntry(name)
+            }
+            guard fchflagsat(parent, name, info.st_flags & ~blockingFlags, AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw systemError("clear slot file flags " + name)
+            }
+        }
+        if directory, info.st_mode & 0o700 != 0o700 {
+            guard info.st_uid == geteuid() else { throw BuildSlotError.unsupportedEntry(name) }
+            guard fchmodat(parent, name, 0o700, AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw systemError("restore slot directory permissions " + name)
+            }
+        }
+        return ArtifactFileFingerprint(info)
+    }
+
     private mutating func syncFile(_ name: String, source: Int32, target: Int32, input: ArtifactFileFingerprint,
                           existing: ArtifactFileFingerprint?) throws {
         let file = openat(source, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
@@ -75,7 +141,6 @@ struct BuildSlotMirror {
         defer { _ = close(file) }
         guard try fingerprint(file) == input else { throw BuildSlotError.changedInput(name) }
         if let existing, existing.mode & S_IFMT == S_IFREG {
-            try checkDevice(existing, name: name)
             if existing.linkCount == 1, existing.mode & 0o777 == input.mode & 0o777, existing.size == input.size {
                 let other = openat(target, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
                 guard other >= 0 else { throw systemError("open mirror " + name) }
@@ -89,37 +154,58 @@ struct BuildSlotMirror {
         let temp = ".agentbuild-" + UUID().uuidString
         // A clone receives the origin's timestamps. Stamp replacements so an
         // equal-sized edit with the same original mtime invalidates Xcode's record.
+        var ownsTemporaryName = false
+        defer { if ownsTemporaryName { _ = unlinkat(target, temp, 0) } }
         let staged: Int32
         if fclonefileat(file, target, temp, UInt32(CLONE_NOOWNERCOPY)) == 0 {
+            ownsTemporaryName = true
+            _ = try Self.prepareEntry(temp, at: target, device: device)
             summary.clonedFiles += 1
             staged = openat(target, temp, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         } else {
-            guard errno == ENOTSUP || errno == EXDEV else { throw systemError("clone " + name) }
+            guard errno == ENOTSUP || errno == EOPNOTSUPP || errno == EXDEV else { throw systemError("clone " + name) }
             summary.copiedFiles += 1
             staged = openat(target, temp, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            ownsTemporaryName = staged >= 0
             if staged >= 0 && fcopyfile(file, staged, nil, copyfile_flags_t(COPYFILE_DATA)) != 0 {
                 let error = systemError("copy " + name)
                 _ = close(staged)
-                _ = unlinkat(target, temp, 0)
                 throw error
             }
         }
         guard staged >= 0 else { throw systemError("open staged " + name) }
-        defer { _ = close(staged); _ = unlinkat(target, temp, 0) }
+        defer { _ = close(staged) }
         guard fchmod(staged, input.mode & 0o777) == 0, futimens(staged, nil) == 0 else {
             throw systemError("set attributes " + name)
         }
         if let existing {
             let stamped = try fingerprint(staged)
-            if stamped.modificationSeconds == existing.modificationSeconds,
-               stamped.modificationNanoseconds == existing.modificationNanoseconds {
-                // Disambiguate two writes within the filesystem clock tick.
-                let time = timespec(tv_sec: Int(stamped.modificationSeconds) + 1, tv_nsec: 0)
+            let newTime = (stamped.modificationSeconds, stamped.modificationNanoseconds)
+            let oldTime = (existing.modificationSeconds, existing.modificationNanoseconds)
+            if newTime <= oldTime {
+                let (second, overflow) = Int(existing.modificationSeconds).addingReportingOverflow(1)
+                guard !overflow else { throw BuildSlotError.unsupportedEntry(name) }
+                let time = timespec(tv_sec: second, tv_nsec: 0)
                 guard futimens(staged, [time, time]) == 0 else { throw systemError("advance timestamp " + name) }
+                guard try fingerprint(staged).modificationSeconds >= second else {
+                    throw BuildSlotError.unsupportedEntry(name)
+                }
+                latestAdvancedSecond = max(latestAdvancedSecond ?? second, second)
             }
         }
         guard try fingerprint(file) == input else { throw BuildSlotError.changedInput(name) }
         guard renameat(target, temp, target, name) == 0 else { throw systemError("publish " + name) }
+        ownsTemporaryName = false
+    }
+
+    func waitForTimestampIfNeeded() async throws {
+        guard let latestAdvancedSecond else { return }
+        // On a coarse volume a quick switch can consume the next clock tick.
+        // Wait once per sync so ordinary rapid builds do not keep accumulating skew.
+        let remaining = Double(latestAdvancedSecond) - Date().timeIntervalSince1970
+        if remaining > 0, remaining <= 1 {
+            try await Task.sleep(for: .seconds(remaining))
+        }
     }
 
     private func sameBytes(_ lhs: Int32, _ rhs: Int32, size: Int64) throws -> Bool {
@@ -144,8 +230,9 @@ struct BuildSlotMirror {
 
     private func remove(_ name: String, from parent: Int32) throws {
         try Task.checkCancellation()
-        let info = try requiredEntry(name, at: parent)
-        try checkDevice(info, name: name)
+        guard let info = try Self.prepareEntry(name, at: parent, device: device) else {
+            throw BuildSlotError.changedInput(name)
+        }
         let directory = info.mode & S_IFMT == S_IFDIR
         if directory {
             try withDirectory(parent, name) { child in
@@ -153,10 +240,6 @@ struct BuildSlotMirror {
             }
         }
         guard unlinkat(parent, name, directory ? AT_REMOVEDIR : 0) == 0 else { throw systemError("remove " + name) }
-    }
-
-    private func checkDevice(_ entry: ArtifactFileFingerprint, name: String) throws {
-        guard entry.device == device else { throw BuildSlotError.unsupportedEntry(name) }
     }
 }
 
@@ -168,16 +251,16 @@ private func fingerprint(_ fd: Int32) throws -> ArtifactFileFingerprint {
     return ArtifactFileFingerprint(info)
 }
 
-private func entry(_ name: String, at parent: Int32) throws -> ArtifactFileFingerprint? {
+private func entryStatus(_ name: String, at parent: Int32) throws -> stat? {
     var info = stat()
-    if fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { return ArtifactFileFingerprint(info) }
+    if fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { return info }
     if errno == ENOENT { return nil }
     throw systemError("stat " + name)
 }
 
 private func requiredEntry(_ name: String, at parent: Int32) throws -> ArtifactFileFingerprint {
-    guard let info = try entry(name, at: parent) else { throw BuildSlotError.changedInput(name) }
-    return info
+    guard let info = try entryStatus(name, at: parent) else { throw BuildSlotError.changedInput(name) }
+    return ArtifactFileFingerprint(info)
 }
 
 private func withDirectory<T>(_ parent: Int32, _ name: String, _ body: (Int32) throws -> T) throws -> T {

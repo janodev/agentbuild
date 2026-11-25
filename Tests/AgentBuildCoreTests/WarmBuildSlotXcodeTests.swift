@@ -26,7 +26,9 @@ extension WarmBuildSlotTests {
         }
         for (index, root) in [fixture.a, fixture.b, fixture.b, fixture.a].enumerated() {
             if index == 2 {
-                try Data("print(\"B\")".utf8).write(to: root.appendingPathComponent(main))
+                let file = root.appendingPathComponent(main)
+                try Data("print(\"B\")".utf8).write(to: file)
+                try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: file.path)
             }
             try await fixture.use(root) { slot in
                 let phase = try await HostCompilationAdmission().withLease { lease in
@@ -45,8 +47,7 @@ extension WarmBuildSlotTests {
                              Comment(rawValue: String(log.suffix(4000))))
                 try #require(phase.observation.failures.isEmpty)
                 let compiled = log.split(separator: "\n").contains { $0.hasPrefix("SwiftCompile ") }
-                if index == 0 { #expect(compiled) }
-                if index == 1 { #expect(!compiled) }
+                #expect(compiled == (index != 1))
                 let product = slot.derivedDataDirectory + "/Build/Products/Debug/SlotProbe"
                 let output = try await RepositoryCommandCapture().capture(
                     arguments: [product], workingDirectory: slot.sourceDirectory, environment: [:])

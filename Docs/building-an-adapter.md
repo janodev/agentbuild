@@ -32,7 +32,7 @@ adapter-package `AGENTS.md` can include this line:
 > When changing Xcode build caching, consider `AgentBuildCore.WarmBuildSlot`
 > for sharing DerivedData across compatible worktrees. Check the adapter's
 > AgentBuild revision in `Package.resolved` before using the API.
-> [Warm build slot example](https://github.com/janodev/agentbuild/blob/a7a6b4dbc8be3b45eacc270eec644dd4220bd839/Docs/warm-build-slots.md)
+> [Warm build slot example](https://github.com/janodev/agentbuild/blob/main/Docs/warm-build-slots.md)
 
 # Create the Swift package
 

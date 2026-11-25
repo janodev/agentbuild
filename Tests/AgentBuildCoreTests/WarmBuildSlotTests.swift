@@ -24,10 +24,11 @@ import Testing
         }
 
         func use<T: Sendable>(_ tree: URL, key: String = "repo/profile",
+                              symlinks: BuildSlotSymlinkPolicy = .withinSource,
                               _ operation: @Sendable (PreparedBuildSlot) async throws -> T) async throws -> T {
             try await WarmBuildSlot(poolDirectory: pool.path, key: key).withPreparedSlot(
                 worktree: tree.path, environment: base.environment,
-                waitSeconds: 0, including: { $0 != "excluded" }, operation: operation)
+                waitSeconds: 0, symlinkPolicy: symlinks, including: { $0 != "excluded" }, operation: operation)
         }
     }
 
@@ -43,7 +44,7 @@ import Testing
             try Data().write(to: root.appendingPathComponent("script"))
             try FileManager.default.setAttributes([.posixPermissions: root == f.a ? 0o600 : 0o700], ofItemAtPath: root.path + "/script")
         }
-        try FileManager.default.createSymbolicLink(atPath: f.a.path + "/node", withDestinationPath: f.b.path)
+        try FileManager.default.createSymbolicLink(atPath: f.a.path + "/node", withDestinationPath: "common")
         try FileManager.default.createDirectory(at: f.b.appendingPathComponent("node"), withIntermediateDirectories: false)
         try Data().write(to: f.b.appendingPathComponent("node/new"))
         try Data().write(to: f.a.appendingPathComponent("Old"))
@@ -52,7 +53,7 @@ import Testing
             #expect(slot.syncSummary.unchangedFiles == 0)
             #expect(slot.syncSummary.clonedFiles + slot.syncSummary.copiedFiles == 4)
             try Data("cache".utf8).write(to: URL(fileURLWithPath: slot.derivedDataDirectory + "/sentinel"))
-            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: slot.sourceDirectory + "/node") == f.b.path)
+            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: slot.sourceDirectory + "/node") == "common")
             return try fileStamp(slot.sourceDirectory + "/common")
         }
         try await f.use(f.b) { slot in

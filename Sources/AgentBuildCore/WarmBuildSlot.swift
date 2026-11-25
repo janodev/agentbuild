@@ -11,12 +11,20 @@ public struct PreparedBuildSlot: Sendable {
     public let syncSummary: BuildSlotSyncSummary
 }
 
+public enum BuildSlotSymlinkPolicy: Sendable {
+    /// Require each link to resolve within the completed source mirror.
+    case withinSource
+    /// Reproduce the worktree's link text, including external and dangling targets.
+    case preserveLiteral
+}
+
 public enum BuildSlotError: Error, Equatable, Sendable {
     case emptyKey
     case overlappingDirectories
     case unsupportedEntry(String)
     case changedInput(String)
     case incompatibleNames(String)
+    case unresolvedSlotLink(String)
     case systemCall(String, Int32)
 }
 
@@ -43,6 +51,7 @@ public struct WarmBuildSlot: Sendable {
         worktree: String,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         waitSeconds: Double? = nil,
+        symlinkPolicy: BuildSlotSymlinkPolicy = .withinSource,
         including: @Sendable (String) throws -> Bool,
         operation: @Sendable (PreparedBuildSlot) async throws -> Result
     ) async throws -> Result {
@@ -62,18 +71,24 @@ public struct WarmBuildSlot: Sendable {
         defer { ownership.release() }
         try Task.checkCancellation()
         let slot = try Self.childDirectory(name, parent: pool)
+        // A previous build may have made its source root read-only.
+        try slot.withDirectory { parent in
+            _ = try BuildSlotMirror.prepareEntry("src", at: parent, device: slot.fingerprint.device, directoryOnly: true)
+        }
         let source = try Self.childDirectory("src", parent: slot)
         let derived = try Self.childDirectory("DerivedData", parent: slot)
-        var mirror = BuildSlotMirror(device: source.fingerprint.device)
+        var mirror = BuildSlotMirror(device: source.fingerprint.device, worktree: worktree, symlinkPolicy: symlinkPolicy)
         let cwd = try source.withDirectory { target in
             try origin.withDirectory { input in
                 try mirror.sync(from: input, to: target, prefix: "", including: including)
             }
+            try mirror.validateLinks(in: target)
             let descriptor = fcntl(target, F_DUPFD_CLOEXEC, 3)
             guard descriptor >= 0 else { throw BuildSlotError.systemCall("duplicate slot directory", errno) }
             return descriptor
         }
         defer { _ = close(cwd) }
+        try await mirror.waitForTimestampIfNeeded()
         try origin.revalidate()
         try source.revalidate()
         try derived.revalidate()
