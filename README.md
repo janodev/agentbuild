@@ -13,11 +13,11 @@ When running multiple agents on a single computer:
 
 How AgentBuild helps:
 
-- Compiler serialization to prevent overhead (`host:compile` lock, released before tests run).
-- Optional worktree compilation to a single folder (`WarmBuildSlot`).
+- Compiler serialization to prevent overhead.
+- Multiple worktree compilation to a single folder.
 - Reserve resources for exclusive use.
-- Reclaims disk usage (shared `DerivedData`, APFS clones, and retention helpers).
-- Technology agnostic.
+- Reclaims disk usage.
+- Technology agnostic (Swift, Unreal, Rust, etc.)
 - iOS simulators use less memory by launching without background services (via SimSlim).
 
 ## Companion tools
@@ -32,11 +32,11 @@ AgentBuild combine them when needed.
 
 ## How multiple worktrees compile in a single folder
 
-An APFS clone is an independent file that initially shares disk blocks with the
+Worktrees usually have small differences, so compiling serially to a single folder is cheaper and faster.
+
+This feature is based on *APFS clones*. An APFS clone is an independent file that initially shares disk blocks with the
 original. When either file is edited, only the changed blocks allocate new
-storage. In the terminal this is `cp -c`; `WarmBuildSlot` creates clones
-programmatically with Darwin's `fclonefileat` (falling back to `fcopyfile`
-across volumes or on non-APFS filesystems).
+storage. 
 
 ```text
 Worktree A ──┐                                  ┌── src/ (APFS-cloned mirror)
