@@ -2,66 +2,33 @@
 
 AgentBuild is a macOS Swift CLI and library (`agentbuild`, `AgentBuildCore`,
 `AgentBuildCLISupport`) for coordinating builds and tests when multiple coding
-agents or Git worktrees share one Mac.
+agents share one Mac.
 
-## The problem on a single machine
+When running multiple agents on a single computer:
 
-When several coding agents work in parallel on one Mac:
+- CPU contention from multiple compilers degrades overall performance.
+- Each compilation uses multiple GB of intermediate products.
+- Non-shareable resources interfere with each other (UI automation, same simulator, computer use, etc.).
+- High memory and disk use.
 
-- Concurrent compilers compete for CPU and slow down every build.
-- Each worktree builds multiple GB of intermediate products (such as `DerivedData`).
-- Non-shareable resources interfere with each other: simulators, UI automation,
-  keyboard focus, and shared caches.
-- Memory and disk usage grow quickly across parallel sessions.
+How AgentBuild helps:
 
-## How AgentBuild helps
-
-- **Compiler serialization:** Compilations acquire one account-wide
-  `host:compile` lock via AgentLease so one build uses all CPU cores cleanly
-  instead of fighting parallel compilers. For `xcodebuild test`,
-  `XcodeExecutionPlan` splits `build-for-testing` from `test-without-building`
-  and releases `host:compile` before tests run.
-- **Optional single-folder worktree builds:** `WarmBuildSlot` lets multiple
-  worktrees take turns building in one reusable directory with APFS clones and
-  a shared `DerivedData` cache.
-- **Exclusive resource reservation:** Built on kernel `flock` locks through
-  AgentLease so builds, caches, simulators, and desktop UI automation take turns
-  without relying on stale lock files. Locks are inherited by child processes
-  and released automatically by the OS if a process crashes.
-- **Lower disk and memory usage:** Shared build slots avoid per-worktree
-  `DerivedData` copies, `LocalCalendarRetention` helps adapters prune old caches
-  and sessions safely, and pairing with SimSlim runs iOS simulators without
-  unneeded background services.
-- **Technology agnostic:** `agentbuild run` supervises any executable under
-  explicit leases and saves raw logs (`stdout.log`, `stderr.log`,
-  `combined.log`) plus an atomic `manifest.json`. Project-specific build logic
-  lives in each repository's own adapter rather than in AgentBuild.
-- **Truthful build and test results:** Native exit codes and signals
-  (`128 + signal`) are preserved. For Xcode adapters, `AgentBuildCore` parses
-  `.xcresult` counts (`ExecutedTests`) to catch runs where zero tests executed,
-  and captures Git and file hashes (`RepositorySourceSnapshot`) to report source
-  drift separately.
+- Compiler serialization to prevent overhead (`host:compile` lock, released before tests run).
+- Optional worktree compilation to a single folder (`WarmBuildSlot`).
+- Reserve resources for exclusive use.
+- Reclaims disk usage (shared `DerivedData`, APFS clones, and retention helpers).
+- Technology agnostic.
+- iOS simulators use less memory by launching without background services (via SimSlim).
 
 ## Companion tools
 
-AgentBuild is part of a set of tools for running multiple coding agents on one
-Mac:
-
-- **AgentBuild** (this repo): coordinates builds and tests, shares warm build
-  slots across worktrees, splits compile and test phases, and records native
-  logs and results.
-- [AgentLease](https://github.com/janodev/agentlease): coordinates access to
-  shared resources with crash-safe kernel locks (`host:compile`, caches,
-  artifacts).
-- [SimLease](https://github.com/janodev/simlease): creates disposable iOS
-  simulators, cleans them up afterward, and queues exclusive macOS UI
-  automation.
-- [SimSlim](https://github.com/janodev/simslim): disables unneeded Simulator
-  background services so simulators use less memory.
+- **AgentBuild** (this repo): coordinates builds and tests, shares warm build slots across worktrees, and records native logs and results.
+- [AgentLease](https://github.com/janodev/agentlease): coordinates shared resources with kernel locks (`host:compile`, caches, artifacts).
+- [SimLease](https://github.com/janodev/simlease): creates disposable iOS simulators, cleans them up afterward, and queues macOS UI automation.
+- [SimSlim](https://github.com/janodev/simslim): disables unneeded Simulator background services to reduce memory use.
 
 AgentLease, SimLease, and SimSlim work independently. Project adapters built on
-AgentBuild combine them when a workflow needs resource locks, disposable
-simulators, or slimmed devices.
+AgentBuild combine them when needed.
 
 ## How multiple worktrees compile in a single folder
 
