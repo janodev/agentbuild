@@ -17,7 +17,7 @@ How AgentBuild helps:
 - Multiple worktree compilation to a single folder.
 - Reserve resources for exclusive use.
 - Reclaims disk usage.
-- Technology agnostic (Swift, Unreal, Rust, etc.)
+- Technology agnostic. Compiles projects in any language (Swift, Unreal, Rust, etc.)
 - iOS simulators use less memory by launching without background services (via SimSlim).
 
 ## Companion tools
