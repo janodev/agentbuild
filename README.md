@@ -1,7 +1,6 @@
 # AgentBuild
 
-AgentBuild is a macOS Swift CLI and library (`agentbuild`, `AgentBuildCore`,
-`AgentBuildCLISupport`) for coordinating builds and tests when multiple coding
+AgentBuild is a macOS Swift CLI and library for coordinating builds and tests when multiple coding
 agents share one Mac.
 
 When running multiple agents on a single computer:
@@ -49,15 +48,13 @@ Suppose worktrees A and B each have their own edits. When either builds,
 sibling `DerivedData/`) and syncs `src/` to match that worktree:
 
 1. Files removed from the worktree are removed from `src/`.
-2. Files whose bytes and permissions already match are left untouched, keeping
-   their inode and timestamp so Xcode skips recompiling them.
+2. Files whose bytes and permissions already match are left untouched.
 3. New or changed files are APFS-cloned into `src/` and stamped with a newer
-   modification time so Xcode detects edits even when the file size did not
-   change.
+   modification time to hint that compilation is required.
 
 Because Xcode uses all available CPU cores while compiling, taking turns on one
 slot avoids CPU contention while letting both worktrees reuse the same warm
-`DerivedData` and saving gigabytes of disk space. If you want one worktree
+`DerivedData` and saving GB of disk space. If you want one worktree
 running tests while another compiles, an adapter can use multiple numbered
 slots, each with its own `DerivedData`, while compilation still serializes on
 `host:compile`.
