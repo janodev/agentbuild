@@ -24,7 +24,11 @@ struct AgentBuildCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentbuild",
         abstract: "Coordinate owned commands and preserve their native results and logs.",
-        discussion: "Run explicitly leased commands, or use agentbuild <adapter> to delegate to an installed sibling agentbuild-<adapter> executable. Adapters are installed separately by their owning projects.",
+        discussion: """
+        Run explicitly leased commands, or use agentbuild <adapter> to delegate to an installed sibling agentbuild-<adapter> executable. Adapters are installed separately by their owning projects.
+
+        To create a new worktree on APFS, install the optional git-seed-worktree companion and run git seed-worktree from the seed checkout. See https://github.com/janodev/git-seed-worktree#use
+        """,
         version: AgentBuild.version,
         subcommands: [DoctorCommand.self, RunCommand.self, NativeWorkerCommand.self]
     )

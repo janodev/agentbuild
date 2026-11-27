@@ -25,6 +25,7 @@ How AgentBuild helps:
 - [AgentLease](https://github.com/janodev/agentlease): coordinates shared resources with kernel locks (`host:compile`, caches, artifacts).
 - [SimLease](https://github.com/janodev/simlease): creates disposable iOS simulators, cleans them up afterward, and queues macOS UI automation.
 - [SimSlim](https://github.com/janodev/simslim): disables unneeded Simulator background services to reduce memory use.
+- **git-seed-worktree** creates a new Git worktree that can share tracked file data with an existing checkout on APFS. [Installation instructions](https://github.com/janodev/git-seed-worktree#use)
 
 AgentLease, SimLease, and SimSlim work independently. Project adapters built on
 AgentBuild combine them when needed.
@@ -97,6 +98,15 @@ to an absolute directory to install elsewhere; it never symlinks into `.build`).
 Add `~/Developer/tools` to `PATH`.
 
 ## Quick start
+
+If you already have a worktree, run AgentBuild from that checkout. To create a
+new worktree on APFS, you can install the optional `git-seed-worktree` companion
+on your `PATH`. Run this from the root of a finished checkout of the repository.
+
+```sh
+git seed-worktree -b feature/login ../login HEAD --seed . --clone-tracked
+cd ../login
+```
 
 Check local tool availability (`swift`, `xcodebuild`, `agentlease`, and optional
 tools):
